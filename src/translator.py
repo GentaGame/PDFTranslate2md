@@ -28,7 +28,7 @@ def translate_text(text: str, target_lang: str = "ja", page_info=None) -> str:
         model = genai.GenerativeModel("gemini-2.0-flash")
         
         # 翻訳リクエスト用のプロンプト
-        prompt = f"次の文章を{target_lang}語に翻訳してください。翻訳のみを返してください。\n#制約\nMarkdownとして体裁を整えてください。ヘッダーは##の階層から始めてください。(すでに#があるところに入れるため)。あなたに渡すのは論文pdfの1ページを出力したものなので、それを前提にヘッダーを組むようにしてください。オリジナルなヘッダーを付け足したらはしなくて良いです。：\n\n{text}"
+        prompt = f"次の文章を{target_lang}語に翻訳してください。翻訳のみを返してください。\n#制約\nMarkdownとして体裁を整えてください。あなたに渡すのは論文pdfの1ページを出力したものなので、それを前提にヘッダーを組むようにしてください。オリジナルなヘッダーを付け足したらはしなくて良いです。：\n\n{text}"
         
         # 内容の生成リクエスト
         start_time = time.time()
