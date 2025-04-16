@@ -24,12 +24,11 @@ def translate_text(text: str, target_lang: str = "ja", page_info=None) -> str:
         # テキストの文字数を取得
         char_count = len(text)
         
-        # APIリクエスト
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        # APIリクエスト - temperatureを0に設定
+        model = genai.GenerativeModel("gemini-2.0-flash", generation_config={"temperature": 0.0})
         
         # 翻訳リクエスト用のプロンプト
-        prompt = f"次の文章を{target_lang}語に翻訳してください。翻訳のみを返してください。\n#制約\nMarkdownとして体裁を整えてください。あなたに渡すのは論文pdfの1ページを出力したものなので、それを前提にヘッダーを組むようにしてください。オリジナルなヘッダーを付け足したらはしなくて良いです。：\n\n{text}"
-        
+        prompt = f"あなたに渡すのは論文pdfの1ページを抽出したものです。次の文章を{target_lang}語に翻訳してください。翻訳した文章のみを返してください。原文に忠実に翻訳し、自分で文章を足したりスキップしたりはしないでください。専門用語は無理に日本語にせず英単語のままでもOKです。Markdownとして体裁を整えてください。特にヘッダーをMarkdownに変換してください('1 関連研究'のようになっている部分です。'1'は1段階(section)なので'#'、'2.1'は2段階(subsection)なので'##'、'2.1.1'は3段階（subsubsection）なので'###'のように、頭の数字に入っている.の数で見出しの段階を決定してください)：\n\n{text}"
         # 内容の生成リクエスト
         start_time = time.time()
         response = model.generate_content(prompt)
