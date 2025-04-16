@@ -5,7 +5,7 @@ def write_markdown(md_path: str, pages: list) -> None:
     """
     with open(md_path, "w", encoding="utf-8") as md_file:
         for i, page in enumerate(pages, start=1):
-            md_file.write(f"## Page {i}\n\n")
+            md_file.write(f"# Page {i}\n\n")
             md_file.write(page)
             md_file.write("\n\n---\n\n")
 
