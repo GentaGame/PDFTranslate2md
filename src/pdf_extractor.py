@@ -1,6 +1,7 @@
 import PyPDF2
 import os
 import fitz  # PyMuPDF
+import argparse
 
 def extract_text(pdf_path: str) -> list:
     """
@@ -58,12 +59,26 @@ def extract_images(pdf_path: str, output_dir: str) -> list:
     return image_paths
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 2:
-        print("Usage: python pdf_extractor.py <pdf_path>")
-    else:
-        pdf_path = sys.argv[1]
-        pages = extract_text(pdf_path)
+    parser = argparse.ArgumentParser(description='PDFからテキストと画像を抽出するツール')
+    parser.add_argument('pdf_path', help='PDFファイルのパス')
+    parser.add_argument('-o', '--output_dir', default='images', help='抽出した画像の保存先ディレクトリ（デフォルト: images）')
+    parser.add_argument('-t', '--text_only', action='store_true', help='テキストのみを抽出する場合に指定')
+    parser.add_argument('-i', '--images_only', action='store_true', help='画像のみを抽出する場合に指定')
+    
+    args = parser.parse_args()
+    
+    # デフォルトでは両方抽出
+    extract_text_flag = not args.images_only or args.text_only
+    extract_images_flag = not args.text_only or args.images_only
+    
+    if extract_text_flag:
+        print("テキストを抽出中...")
+        pages = extract_text(args.pdf_path)
         for i, page_text in enumerate(pages, start=1):
             print(f"--- Page {i} ---")
             print(page_text)
+    
+    if extract_images_flag:
+        print(f"画像を抽出中... 保存先: {args.output_dir}")
+        image_paths = extract_images(args.pdf_path, args.output_dir)
+        print(f"{len(image_paths)}ページの画像を保存しました。")

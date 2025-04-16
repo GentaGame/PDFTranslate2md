@@ -1,5 +1,6 @@
 import sys
 import os
+import argparse
 from tqdm import tqdm
 from pdf_extractor import extract_text, extract_images
 from markdown_writer import write_markdown
@@ -7,19 +8,28 @@ from translator import translate_text
 
 def main():
     # コマンドライン引数の処理
-    if len(sys.argv) < 2:
-        print("Usage: python main.py <input_pdf_path> [output_md_path]")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='PDFから翻訳されたMarkdownファイルを生成するツール')
+    parser.add_argument('input_pdf', help='入力PDFファイルのパス')
+    parser.add_argument('-o', '--output', help='出力Markdownファイルのパス（指定しない場合、入力PDFと同名の.mdファイルが生成されます）')
+    parser.add_argument('-i', '--image_dir', help='画像出力ディレクトリ（指定しない場合、出力Markdownと同じディレクトリの"images"フォルダが使用されます）')
     
-    input_pdf = sys.argv[1]
+    args = parser.parse_args()
+    
+    input_pdf = args.input_pdf
     
     # 出力ファイル名を入力PDFの名前に基づいて自動生成
-    if len(sys.argv) >= 3:
-        output_md = sys.argv[2]
+    if args.output:
+        output_md = args.output
     else:
         # 入力PDFのベース名を取得し、拡張子を.mdに変更
         pdf_base = os.path.splitext(os.path.basename(input_pdf))[0]
         output_md = f"{pdf_base}.md"
+    
+    # 画像出力ディレクトリの設定
+    if args.image_dir:
+        output_dir = args.image_dir
+    else:
+        output_dir = os.path.join(os.path.dirname(output_md), "images")
     
     print(f"PDFファイル '{input_pdf}' からテキストを抽出中...")
     pages = extract_text(input_pdf)
@@ -27,8 +37,7 @@ def main():
     print(f"合計 {total_pages} ページが抽出されました。")
     
     # PDFの各ページを画像として保存
-    print("PDFから画像を抽出しています...")
-    output_dir = os.path.join(os.path.dirname(output_md), "images")
+    print(f"PDFから画像を抽出しています... 保存先: {output_dir}")
     image_paths = extract_images(input_pdf, output_dir)
     print(f"{len(image_paths)}枚の画像が保存されました: {output_dir}")
     
