@@ -7,13 +7,18 @@ from pdf_extractor import extract_text, extract_images
 from markdown_writer import write_markdown
 from translator import translate_text
 
-def process_pdf(input_pdf, output_dir, image_dir, llm_provider, model_name):
+def process_pdf(input_pdf, output_dir, image_dir, llm_provider, model_name, force_overwrite=False):
     """単一のPDFファイルを処理する関数"""
     print(f"PDFファイル '{input_pdf}' の処理を開始します...")
     
     # 出力ファイル名を入力PDFの名前に基づいて自動生成
     pdf_base = os.path.splitext(os.path.basename(input_pdf))[0]
     output_md = os.path.join(output_dir, f"{pdf_base}.md")
+    
+    # 既存の.mdファイルがあるかチェック
+    if os.path.exists(output_md) and not force_overwrite:
+        print(f"スキップ: 出力先に既に '{pdf_base}.md' が存在します。上書きするには --force オプションを使用してください。")
+        return output_md
     
     # 画像出力ディレクトリの設定
     pdf_image_dir = os.path.join(image_dir, pdf_base)
@@ -52,6 +57,7 @@ def main():
     parser.add_argument('-i', '--image-dir', help='画像出力ディレクトリ（指定しない場合、出力ディレクトリ内の"images"フォルダが使用されます）')
     parser.add_argument('-p', '--provider', help='使用するLLMプロバイダー（gemini, openai, claude, anthropic）', default='gemini')
     parser.add_argument('-m', '--model-name', help='LLMモデル名（指定しない場合はプロバイダーのデフォルト）')
+    parser.add_argument('-f', '--force', help='既存のMarkdownファイルが存在する場合も強制的に上書きする', action='store_true')
 
     args = parser.parse_args()
 
@@ -60,6 +66,8 @@ def main():
     # LLM設定
     llm_provider = args.provider
     model_name = args.model_name
+    # 強制上書きオプション
+    force_overwrite = args.force
 
     # 出力ディレクトリの設定（デフォルトは現在のディレクトリ）
     output_dir = args.output_dir if args.output_dir else os.getcwd()
@@ -73,6 +81,7 @@ def main():
     os.makedirs(image_dir, exist_ok=True)
     
     processed_files = []
+    skipped_files = []
     
     # 入力パスがディレクトリかファイルかを判断
     if os.path.isdir(input_path):
@@ -85,19 +94,41 @@ def main():
         print(f"ディレクトリ '{input_path}' 内の {len(pdf_files)} 個のPDFファイルを処理します...")
         
         for pdf_file in pdf_files:
-            output_md = process_pdf(pdf_file, output_dir, image_dir, llm_provider, model_name)
+            pdf_base = os.path.splitext(os.path.basename(pdf_file))[0]
+            output_md = os.path.join(output_dir, f"{pdf_base}.md")
+            
+            # 既存の.mdファイルがあるかチェック
+            if os.path.exists(output_md) and not force_overwrite:
+                print(f"スキップ: 出力先に既に '{pdf_base}.md' が存在します。")
+                skipped_files.append(output_md)
+                continue
+                
+            output_md = process_pdf(pdf_file, output_dir, image_dir, llm_provider, model_name, force_overwrite)
             processed_files.append(output_md)
             
-        print(f"\nすべての処理が完了しました。{len(processed_files)}個のファイルが作成されました:")
-        for file in processed_files:
-            print(f"- {file}")
+        if processed_files:
+            print(f"\n処理完了: {len(processed_files)}個のファイルが作成されました:")
+            for file in processed_files:
+                print(f"- {file}")
+        
+        if skipped_files:
+            print(f"\nスキップされたファイル: {len(skipped_files)}個")
+            print("スキップされたファイルを処理するには --force オプションを使用してください。")
     else:
         # 単一のPDFファイルを処理
         if not input_path.lower().endswith('.pdf'):
             print(f"エラー: 入力ファイル '{input_path}' はPDFファイルではありません。")
             return
         
-        output_md = process_pdf(input_path, output_dir, image_dir, llm_provider, model_name)
+        pdf_base = os.path.splitext(os.path.basename(input_path))[0]
+        output_md = os.path.join(output_dir, f"{pdf_base}.md")
+        
+        # 既存の.mdファイルがあるかチェック
+        if os.path.exists(output_md) and not force_overwrite:
+            print(f"スキップ: 出力先に既に '{pdf_base}.md' が存在します。上書きするには --force オプションを使用してください。")
+            return
+            
+        output_md = process_pdf(input_path, output_dir, image_dir, llm_provider, model_name, force_overwrite)
         processed_files.append(output_md)
     
     print(f"\n出力ディレクトリ: {output_dir}")

@@ -12,6 +12,8 @@ PDFファイルからテキストを抽出し、LLMのAPIを使用して翻訳�
 - 翻訳時にMarkdownの見出し構造を自動的に整形
 - フォルダ内の全PDFファイルを一括処理
 - 出力先ディレクトリを指定可能（Obsidianなどのノートアプリと連携しやすい）
+- 参考文献の番号とテキスト内の引用をリンク化
+- 既存の出力ファイルがある場合は処理をスキップ（--forceオプションで上書き可能）
 
 ## インストール方法
 
@@ -69,7 +71,8 @@ python src/main.py input.pdf \
   [-p gemini|openai|claude|anthropic] \
   [-m モデル名] \
   [-o output_directory] \
-  [-i images_directory]
+  [-i images_directory] \
+  [-f, --force]
 ```
 
 #### オプション説明:
@@ -77,6 +80,7 @@ python src/main.py input.pdf \
 - `-m, --model-name`: LLMモデル名（指定しない場合はプロバイダー毎のデフォルト）
 - `-o, --output-dir`: 出力先ディレクトリ（指定しない場合は現在のディレクトリ）
 - `-i, --image-dir`: 画像出力ディレクトリ（指定しない場合は出力ディレクトリ内の"images"フォルダ）
+- `-f, --force`: 既存のMarkdownファイルが存在する場合も強制的に上書きする
 
 ### ディレクトリ処理の例
 
@@ -106,6 +110,22 @@ python src/pdf_extractor.py input.pdf -o images_directory
 出力先ディレクトリを指定することで、直接Obsidianのノートフォルダに翻訳結果を保存できます。
 各PDFファイルは個別のMarkdownファイルとして出力され、画像はPDF名のサブフォルダに整理されるため、
 ノート管理がしやすくなっています。
+
+### 参考文献のリンク
+
+論文の参考文献と本文中の引用（[1], [2]など）が自動的にリンク化されます。
+これにより、Obsidianなどのマークダウンビューアで参考文献をクリックすると、
+対応する参考文献の位置にジャンプできます。
+
+### バッチ処理と再実行
+
+フォルダ内の複数のPDFを処理する際、既に出力先に同名の.mdファイルが存在する場合は
+処理をスキップします。これによりAPI呼び出しのコストを削減できます。
+
+既存ファイルを上書きするには `--force` オプションを使用します：
+```bash
+python src/main.py /path/to/pdf_folder -o /path/to/output -f
+```
 
 ## 出力例
 
