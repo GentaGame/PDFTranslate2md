@@ -5,6 +5,9 @@ from dotenv import load_dotenv
 import google.generativeai as genai
 import openai
 import anthropic
+import backoff
+import tenacity
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 load_dotenv()
 
@@ -12,36 +15,111 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
+# タイムアウトとリトライの設定
+DEFAULT_TIMEOUT = 300  # デフォルトタイムアウト (秒)
+MAX_RETRIES = 2        # 最大リトライ回数
+
 # Gemini APIの設定
 genai.configure(api_key=GEMINI_API_KEY)
 
 # OpenAIとAnthropicクライアント設定
 # OpenAI APIクライアントを初期化（新しい形式）
-openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
-anthropic_client = anthropic.Client(api_key=ANTHROPIC_API_KEY)
+openai_client = openai.OpenAI(api_key=OPENAI_API_KEY, timeout=DEFAULT_TIMEOUT)
+anthropic_client = anthropic.Client(api_key=ANTHROPIC_API_KEY, timeout=DEFAULT_TIMEOUT)
 
 def clean_markdown_headers(text: str) -> str:
     """
-    Markdownのヘッダー形式を整形する関数
-    ※数字部分は保持します
-    例: '### 3.1 設計' → '### 3.1 設計' (数字はそのまま)
+    既存のMarkdownヘッダーのレベルを数字パターンに合わせて修正する関数
+    既にヘッダー記号(#)がついている行のみを対象とします
+    
+    例: '# 3.1 手法' → '## 3.1 手法' (ドットが1つなので##に修正)
+    例: '### 2 方法' → '# 2 方法' (ドットがないので#に修正)
     
     Args:
         text: 整形する翻訳済みテキスト
     Returns:
         整形後のテキスト
     """
-    # 見出しを適切に検出するための正規表現を修正
-    # パターン: 数字から始まる行を見出しに変換 (例: '3.1 設計' → '### 3.1 設計')
-    # ただし、既に '#' で始まる行はそのまま
-    
     lines = text.split('\n')
     processed_lines = []
     
+    # 数字とドットのパターンを検出する正規表現
+    # 例: "1", "1.2", "1.2.3" などにマッチ
+    section_pattern = r'^(\d+(\.\d+)*)\s'
+    
     for line in lines:
-        processed_lines.append(line)
+        trimmed_line = line.lstrip()
+        
+        # 既存のヘッダー行のみを処理
+        if trimmed_line.startswith('#'):
+            # ヘッダー記号を削除してテキスト部分を取得
+            header_text = re.sub(r'^#+\s*', '', trimmed_line)
+            
+            # ヘッダーテキストの先頭に数字パターンがあるかチェック
+            match = re.match(section_pattern, header_text)
+            
+            if match:
+                # 数字パターンが見つかった場合
+                section_num = match.group(1)
+                # ドットの数をカウントしてヘッダーレベルを決定 (ドット数+1)
+                header_level = section_num.count('.') + 1
+                # ヘッダーマーカーの作成（例: ###）
+                header_marker = '#' * header_level
+                # 新しいヘッダー記号を追加
+                formatted_line = f"{header_marker} {header_text}"
+                processed_lines.append(formatted_line)
+            else:
+                # 数字パターンがない場合はそのまま
+                processed_lines.append(line)
+        else:
+            # ヘッダー行でない場合はそのまま
+            processed_lines.append(line)
     
     return '\n'.join(processed_lines)
+
+@retry(
+    stop=stop_after_attempt(MAX_RETRIES),
+    wait=wait_exponential(multiplier=1, min=2, max=60),
+    retry=retry_if_exception_type((openai.APIError, openai.APITimeoutError, anthropic.APIError, ConnectionError, TimeoutError)),
+    reraise=True
+)
+def call_llm_with_retry(llm_provider, model_name, prompt):
+    """
+    リトライ機能を持つLLM呼び出し関数
+    
+    Args:
+        llm_provider: 使用するLLMプロバイダー
+        model_name: 使用するモデル名
+        prompt: 送信するプロンプト
+        
+    Returns:
+        LLMからの応答テキスト
+    """
+    try:
+        if llm_provider == "gemini":
+            model = genai.GenerativeModel(model_name, generation_config={"temperature": 0.0})
+            response = model.generate_content(prompt)
+            return response.text
+        elif llm_provider == "openai":
+            response = openai_client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0
+            )
+            return response.choices[0].message.content
+        elif llm_provider in ("claude", "anthropic"):
+            response = anthropic_client.completions.create(
+                model=model_name,
+                prompt=anthropic.HUMAN_PROMPT + prompt + anthropic.AI_PROMPT,
+                max_tokens_to_sample=10000,
+                temperature=0.0
+            )
+            return response.completion
+        else:
+            raise ValueError(f"Unknown llm_provider: {llm_provider}")
+    except Exception as e:
+        print(f"  ! API呼び出しエラー (リトライします): {str(e)}")
+        raise e
 
 def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provider: str = "gemini", model_name: str = None) -> str:
     """
@@ -87,34 +165,16 @@ Markdownとして体裁を整えてください。特にヘッダーは以下の
 
 翻訳対象：
 {text}"""
-        # LLMプロバイダーに応じてリクエスト
+        # LLMプロバイダーを使用してリクエスト（リトライ機能付き）
         start_time = time.time()
-        if llm_provider == "gemini":
-            model = genai.GenerativeModel(model_name, generation_config={"temperature": 0.0})
-            response = model.generate_content(prompt)
-            result = response.text
-        elif llm_provider == "openai":
-            # 新しいOpenAI API形式を使用
-            response = openai_client.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0
-            )
-            result = response.choices[0].message.content
-        elif llm_provider in ("claude", "anthropic"):
-            response = anthropic_client.completions.create(
-                model=model_name,
-                prompt=anthropic.HUMAN_PROMPT + prompt + anthropic.AI_PROMPT,
-                max_tokens_to_sample=10000,
-                temperature=0.0
-            )
-            result = response.completion
-        else:
-            raise ValueError(f"Unknown llm_provider: {llm_provider}")
-        elapsed_time = time.time() - start_time
         
-        # 後処理：見出しの整形（必要に応じて）
-        # result = clean_markdown_headers(result)
+        # リトライ機能付き呼び出し
+        result = call_llm_with_retry(llm_provider, model_name, prompt)
+        
+        # ヘッダーの整形処理を適用
+        result = clean_markdown_headers(result)
+        
+        elapsed_time = time.time() - start_time
         
         # ページ情報があれば、ログに残す（tqdmと競合しないように）
         if page_info:
@@ -124,7 +184,7 @@ Markdownとして体裁を整えてください。特にヘッダーは以下の
     except Exception as e:
         error_msg = f"翻訳エラー: {str(e)}"
         print(error_msg)
-        return "翻訳エラーが発生しました"
+        return f"翻訳エラーが発生しました: {error_msg}"
 
 if __name__ == "__main__":
     sample_text = "Hello, world!"
