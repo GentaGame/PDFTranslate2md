@@ -7,3 +7,4 @@ PyMuPDF>=1.24.0
 Pillow>=10.1.0
 openai
 anthropic
+tenacity>=8.2.0
