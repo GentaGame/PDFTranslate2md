@@ -12,11 +12,16 @@ def main():
     parser.add_argument('input_pdf', help='入力PDFファイルのパス')
     parser.add_argument('-o', '--output', help='出力Markdownファイルのパス（指定しない場合、入力PDFと同名の.mdファイルが生成されます）')
     parser.add_argument('-i', '--image_dir', help='画像出力ディレクトリ（指定しない場合、出力Markdownと同じディレクトリの"images"フォルダが使用されます）')
-    
+    parser.add_argument('-p', '--provider', help='使用するLLMプロバイダー（gemini, openai, claude, anthropic）', default='gemini')
+    parser.add_argument('-m', '--model-name', help='LLMモデル名（指定しない場合はプロバイダーのデフォルト）')
+
     args = parser.parse_args()
-    
+
     input_pdf = args.input_pdf
-    
+    # LLM設定
+    llm_provider = args.provider
+    model_name = args.model_name
+
     # 出力ファイル名を入力PDFの名前に基づいて自動生成
     if args.output:
         output_md = args.output
@@ -46,7 +51,9 @@ def main():
     translated_pages = []
     for i, page in enumerate(tqdm(pages, desc="翻訳処理中", unit="ページ")):
         page_info = {'current': i+1, 'total': total_pages}
-        translated_pages.append(translate_text(page, page_info=page_info))
+        translated_pages.append(
+            translate_text(page, page_info=page_info, llm_provider=llm_provider, model_name=model_name)
+        )
     
     print("\n翻訳完了。Markdownファイルに書き出しています...")
     write_markdown(output_md, translated_pages, image_paths)
