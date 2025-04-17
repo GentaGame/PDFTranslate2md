@@ -1,6 +1,6 @@
 # PDFTranslate2md
 
-PDFファイルからテキストを抽出し、Gemini APIを使用して翻訳し、Markdownファイルとして保存するPythonツールです。学術論文や技術文書を効率的に翻訳するために設計されています。
+PDFファイルからテキストを抽出し、LLMのAPIを使用して翻訳し、Markdownファイルとして保存するPythonツールです。学術論文や技術文書を効率的に翻訳するために設計されています。
 
 ## 主な機能
 
@@ -29,6 +29,12 @@ pip install -r requirements.txt
 GEMINI_API_KEY=your_api_key_here
 ```
 
+## 環境変数設定
+
+- GEMINI_API_KEY: Google Gemini APIキー
+- OPENAI_API_KEY: OpenAI APIキー
+- ANTHROPIC_API_KEY: Anthropic (Claude) APIキー
+
 ## 依存ライブラリ
 
 - PyPDF2: PDFからテキスト抽出
@@ -36,6 +42,9 @@ GEMINI_API_KEY=your_api_key_here
 - python-dotenv: 環境変数管理
 - google-generativeai: Gemini APIとの連携
 - tqdm: 進捗状況の表示
+- Pillow
+- openai
+- anthropic
 
 ## 使用方法
 
@@ -50,12 +59,18 @@ python src/main.py input.pdf
 ### オプション指定
 
 ```bash
-python src/main.py input.pdf -o output.md -i images_directory
+python src/main.py input.pdf \
+  [-p gemini|openai|claude|anthropic] \
+  [-m モデル名] \
+  [-o output.md] \
+  [-i images_directory]
 ```
 
 #### オプション説明:
-- `-o, --output`: 出力Markdownファイルのパス（指定しない場合、入力PDFと同名の.mdファイル）
-- `-i, --image_dir`: 画像出力ディレクトリ（指定しない場合、"images"フォルダ）
+- `-p, --provider`: 使用するLLMプロバイダー（デフォルト: gemini）
+- `-m, --model-name`: LLMモデル名（指定しない場合はプロバイダー毎のデフォルト）
+- `-o, --output`: 出力Markdownファイルのパス
+- `-i, --image_dir`: 画像出力ディレクトリ
 
 ### PDF抽出ツールの単体使用
 
