@@ -140,11 +140,11 @@ def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provi
         # デフォルトモデル名決定
         if model_name is None:
             if llm_provider == "gemini":
-                model_name = "gemini-2.0-flash"
+                model_name = "gemini-2.5-flash-preview-04-17"
             elif llm_provider == "openai":
                 model_name = "gpt-4o"
             elif llm_provider in ("claude", "anthropic"):
-                model_name = "claude-3.5-sonnet"
+                model_name = "claude-3.7-sonnet"
 
         # 翻訳リクエスト用のプロンプト
         prompt = f"""あなたに渡すのは論文pdfの1ページを抽出したものです。次の文章を{target_lang}語に翻訳してください。
