@@ -2,7 +2,7 @@ import os
 import time
 import re
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import generativeai as genai
 import openai
 import anthropic
 import tenacity
@@ -96,8 +96,9 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
     """
     try:
         if llm_provider == "gemini":
-            model = genai.GenerativeModel(model_name, generation_config={"temperature": 0.0})
-            response = model.generate_content(prompt)
+            # 新しいGenerativeModelインターフェースを使用
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt, generation_config={"temperature": 0.0})
             return response.text
         elif llm_provider == "openai":
             response = openai_client.chat.completions.create(
@@ -140,7 +141,7 @@ def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provi
         # デフォルトモデル名決定
         if model_name is None:
             if llm_provider == "gemini":
-                model_name = "gemini-2.5-flash-preview-04-17"
+                model_name = "gemini-1.5-flash"  # 利用可能な最新のモデル
             elif llm_provider == "openai":
                 model_name = "gpt-4o"
             elif llm_provider in ("claude", "anthropic"):
