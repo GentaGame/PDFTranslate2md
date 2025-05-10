@@ -8,6 +8,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 import requests.exceptions
 import http.client
 import urllib.error
+from tqdm.auto import tqdm  # 進捗バーと衝突しない出力用（tqdm.write使用）
 
 # .envファイルの存在確認
 dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
@@ -155,7 +156,7 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
             if genai is None:
                 from google import generativeai as genai
                 genai.configure(api_key=GEMINI_API_KEY)
-                print("Gemini APIを初期化しました")
+                tqdm.write("Gemini APIを初期化しました")
             
             # 新しいGenerativeModelインターフェースを使用
             model = genai.GenerativeModel(model_name)
@@ -167,7 +168,7 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
             if openai_client is None:
                 import openai
                 openai_client = openai.OpenAI(api_key=OPENAI_API_KEY, timeout=DEFAULT_TIMEOUT)
-                print("OpenAI APIを初期化しました")
+                tqdm.write("OpenAI APIを初期化しました")
                 
             response = openai_client.chat.completions.create(
                 model=model_name,
@@ -181,7 +182,7 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
             if anthropic_client is None:
                 import anthropic
                 anthropic_client = anthropic.Client(api_key=ANTHROPIC_API_KEY, timeout=DEFAULT_TIMEOUT)
-                print("Anthropic APIを初期化しました")
+                tqdm.write("Anthropic APIを初期化しました")
                 
             response = anthropic_client.completions.create(
                 model=model_name,
@@ -194,13 +195,13 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
             raise ValueError(f"Unknown llm_provider: {llm_provider}")
     except requests.exceptions.HTTPError as e:
         status_code = e.response.status_code if hasattr(e, 'response') and hasattr(e.response, 'status_code') else 0
-        print(f"  ! HTTP エラー ({status_code}): {str(e)} (リトライします)")
+        tqdm.write(f"  ! HTTP エラー ({status_code}): {str(e)} (リトライします)")
         # 504エラーや503エラーの場合は特別なエラーとして再発生
         if status_code in [503, 504]:
             raise HTTPStatusError(status_code, f"サーバーエラー ({status_code}): {str(e)}")
         raise e
     except Exception as e:
-        print(f"  ! API呼び出しエラー (リトライします): {str(e)}")
+        tqdm.write(f"  ! API呼び出しエラー (リトライします): {str(e)}")
         raise e
 
 @retry(
@@ -226,8 +227,7 @@ def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provi
         # ページ情報があれば、ログに残す
         if page_info:
             page_msg = f"ページ {page_info['current']}/{page_info['total']} の翻訳を開始"
-            print(f"  • {page_msg}")
-            
+            tqdm.write(f"  • {page_msg}")
         # APIキーの存在確認
         if llm_provider == "gemini" and not GEMINI_API_KEY:
             return "翻訳エラー: Gemini APIキーが設定されていません。.envファイルにGEMINI_API_KEYを設定してください。", []
@@ -291,7 +291,7 @@ Markdownとして体裁を整えてください。特にヘッダーは以下の
         
         # ページ情報があれば、ログに残す（tqdmと競合しないように）
         if page_info:
-            print(f"  ✓ ページ {page_info['current']}/{page_info['total']} ({char_count}文字) - {elapsed_time:.1f}秒で翻訳完了")
+            tqdm.write(f"  ✓ ページ {page_info['current']}/{page_info['total']} ({char_count}文字) - {elapsed_time:.1f}秒で翻訳完了")
         
         return result, extract_headers(result)
     except RETRY_EXCEPTIONS as e:
@@ -301,16 +301,16 @@ Markdownとして体裁を整えてください。特にヘッダーは以下の
         
         if remaining > 0:
             page_str = f"ページ {page_info['current']}/{page_info['total']}" if page_info else "現在のページ"
-            print(f"  ! {page_str} の翻訳でエラーが発生しました。リトライします (残り{remaining}回): {str(e)}")
+            tqdm.write(f"  ! {page_str} の翻訳でエラーが発生しました。リトライします (残り{remaining}回): {str(e)}")
             raise e
         else:
             error_msg = f"翻訳エラー (最大リトライ回数に達しました): {str(e)}"
-            print(error_msg)
+            tqdm.write(error_msg)
             return f"翻訳エラーが発生しました: {error_msg}", []
     except Exception as e:
         # リトライ対象外のエラー
         error_msg = f"翻訳エラー: {str(e)}"
-        print(error_msg)
+        tqdm.write(error_msg)
         return f"翻訳エラーが発生しました: {error_msg}", []
 
 if __name__ == "__main__":
