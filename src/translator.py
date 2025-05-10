@@ -2,14 +2,23 @@ import os
 import time
 import re
 from dotenv import load_dotenv
-from google import generativeai as genai
-import openai
-import anthropic
+# 遅延インポートのためにAPIクライアントのインポートを移動
 import tenacity
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-load_dotenv()
+# .envファイルの存在確認
+dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
+if not os.path.exists(dotenv_path):
+    print(f"\n警告: .envファイルが見つかりません。{dotenv_path} に.envファイルを作成してください。")
+    print("必要なAPIキーの設定例:")
+    print("GEMINI_API_KEY=your_gemini_api_key")
+    print("OPENAI_API_KEY=your_openai_api_key")
+    print("ANTHROPIC_API_KEY=your_anthropic_api_key\n")
 
+# 環境変数の読み込み
+load_dotenv(dotenv_path)
+
+# 環境変数の読み込み
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
@@ -18,13 +27,10 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 DEFAULT_TIMEOUT = 300  # デフォルトタイムアウト (秒)
 MAX_RETRIES = 2        # 最大リトライ回数
 
-# Gemini APIの設定
-genai.configure(api_key=GEMINI_API_KEY)
-
-# OpenAIとAnthropicクライアント設定
-# OpenAI APIクライアントを初期化（新しい形式）
-openai_client = openai.OpenAI(api_key=OPENAI_API_KEY, timeout=DEFAULT_TIMEOUT)
-anthropic_client = anthropic.Client(api_key=ANTHROPIC_API_KEY, timeout=DEFAULT_TIMEOUT)
+# APIクライアントとモデル（遅延インポート用）
+genai = None
+openai_client = None
+anthropic_client = None
 
 def clean_markdown_headers(text: str) -> str:
     """
@@ -79,7 +85,7 @@ def clean_markdown_headers(text: str) -> str:
 @retry(
     stop=stop_after_attempt(MAX_RETRIES),
     wait=wait_exponential(multiplier=1, min=2, max=60),
-    retry=retry_if_exception_type((openai.APIError, openai.APITimeoutError, anthropic.APIError, ConnectionError, TimeoutError)),
+    retry=retry_if_exception_type((ConnectionError, TimeoutError)),
     reraise=True
 )
 def call_llm_with_retry(llm_provider, model_name, prompt):
@@ -96,11 +102,25 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
     """
     try:
         if llm_provider == "gemini":
+            # 必要なときにだけGemini APIをインポート
+            global genai
+            if genai is None:
+                from google import generativeai as genai
+                genai.configure(api_key=GEMINI_API_KEY)
+                print("Gemini APIを初期化しました")
+            
             # 新しいGenerativeModelインターフェースを使用
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(prompt, generation_config={"temperature": 0.0})
             return response.text
         elif llm_provider == "openai":
+            # 必要なときにだけOpenAI APIをインポート
+            global openai_client
+            if openai_client is None:
+                import openai
+                openai_client = openai.OpenAI(api_key=OPENAI_API_KEY, timeout=DEFAULT_TIMEOUT)
+                print("OpenAI APIを初期化しました")
+                
             response = openai_client.chat.completions.create(
                 model=model_name,
                 messages=[{"role": "user", "content": prompt}],
@@ -108,6 +128,13 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
             )
             return response.choices[0].message.content
         elif llm_provider in ("claude", "anthropic"):
+            # 必要なときにだけAnthropic APIをインポート
+            global anthropic_client
+            if anthropic_client is None:
+                import anthropic
+                anthropic_client = anthropic.Client(api_key=ANTHROPIC_API_KEY, timeout=DEFAULT_TIMEOUT)
+                print("Anthropic APIを初期化しました")
+                
             response = anthropic_client.completions.create(
                 model=model_name,
                 prompt=anthropic.HUMAN_PROMPT + prompt + anthropic.AI_PROMPT,
@@ -134,6 +161,14 @@ def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provi
         model_name: 使用するモデル名（省略時はデフォルト値を使用）
     """
     try:
+        # APIキーの存在確認
+        if llm_provider == "gemini" and not GEMINI_API_KEY:
+            return "翻訳エラー: Gemini APIキーが設定されていません。.envファイルにGEMINI_API_KEYを設定してください。"
+        elif llm_provider == "openai" and not OPENAI_API_KEY:
+            return "翻訳エラー: OpenAI APIキーが設定されていません。.envファイルにOPENAI_API_KEYを設定してください。"
+        elif llm_provider in ("claude", "anthropic") and not ANTHROPIC_API_KEY:
+            return "翻訳エラー: Anthropic APIキーが設定されていません。.envファイルにANTHROPIC_API_KEYを設定してください。"
+        
         # テキストの文字数を取得
         char_count = len(text)
         

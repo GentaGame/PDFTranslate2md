@@ -60,6 +60,28 @@ def main():
     parser.add_argument('-f', '--force', help='既存のMarkdownファイルが存在する場合も強制的に上書きする', action='store_true')
 
     args = parser.parse_args()
+    
+    # 起動メッセージ表示
+    print("PDFTranslate2md を起動中...")
+    print(f"使用するAIプロバイダー: {args.provider}")
+    
+    # モデル名の表示
+    if args.model_name:
+        print(f"モデル: {args.model_name}")
+    else:
+        if args.provider == "gemini":
+            print("モデル: gemini-1.5-flash (デフォルト)")
+        elif args.provider == "openai":
+            print("モデル: gpt-4o (デフォルト)")
+        elif args.provider in ("claude", "anthropic"):
+            print("モデル: claude-3.7-sonnet (デフォルト)")
+    
+    # 使用するAIプロバイダーが正しいかどうかを検証
+    valid_providers = ["gemini", "openai", "claude", "anthropic"]
+    if args.provider not in valid_providers:
+        print(f"エラー: 無効なAIプロバイダーです: {args.provider}")
+        print(f"有効なプロバイダー: {', '.join(valid_providers)}")
+        return
 
     # 入力パスを取得
     input_path = args.input
