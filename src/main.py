@@ -37,11 +37,21 @@ def process_pdf(input_pdf, output_dir, image_dir, llm_provider, model_name, forc
     print("翻訳を開始します...")
     # Translate each page's text using LLM API with progress bar
     translated_pages = []
+    all_headers = []  # すべてのヘッダーを保持するリスト
+    
     for i, page in enumerate(tqdm(pages, desc="翻訳処理中", unit="ページ")):
         page_info = {'current': i+1, 'total': total_pages}
-        translated_pages.append(
-            translate_text(page, page_info=page_info, llm_provider=llm_provider, model_name=model_name)
+        # 前のページのヘッダー情報を使用して翻訳
+        translated_text, headers = translate_text(
+            page, 
+            page_info=page_info, 
+            llm_provider=llm_provider, 
+            model_name=model_name,
+            previous_headers=all_headers
         )
+        translated_pages.append(translated_text)
+        # 新しいヘッダーを追加
+        all_headers.extend(headers)
     
     print("\n翻訳完了。Markdownファイルに書き出しています...")
     write_markdown(output_md, translated_pages, image_paths)
@@ -68,13 +78,6 @@ def main():
     # モデル名の表示
     if args.model_name:
         print(f"モデル: {args.model_name}")
-    else:
-        if args.provider == "gemini":
-            print("モデル: gemini-1.5-flash (デフォルト)")
-        elif args.provider == "openai":
-            print("モデル: gpt-4o (デフォルト)")
-        elif args.provider in ("claude", "anthropic"):
-            print("モデル: claude-3.7-sonnet (デフォルト)")
     
     # 使用するAIプロバイダーが正しいかどうかを検証
     valid_providers = ["gemini", "openai", "claude", "anthropic"]

@@ -4,7 +4,7 @@ import re
 from dotenv import load_dotenv
 # 遅延インポートのためにAPIクライアントのインポートを移動
 import tenacity
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, retry_if_exception
 
 # .envファイルの存在確認
 dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
@@ -24,13 +24,32 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 # タイムアウトとリトライの設定
-DEFAULT_TIMEOUT = 300  # デフォルトタイムアウト (秒)
-MAX_RETRIES = 2        # 最大リトライ回数
+DEFAULT_TIMEOUT = 600  # デフォルトタイムアウト (秒)
+MAX_RETRIES = 3        # 最大リトライ回数
+INITIAL_RETRY_DELAY = 2  # 初期リトライ待機時間 (秒)
+MAX_RETRY_DELAY = 120    # 最大リトライ待機時間 (秒)
 
 # APIクライアントとモデル（遅延インポート用）
 genai = None
 openai_client = None
 anthropic_client = None
+
+def extract_headers(text: str) -> list:
+    """
+    Markdownテキストからヘッダー（# で始まる行）を抽出する関数
+    
+    Args:
+        text: ヘッダーを抽出するMarkdownテキスト
+        
+    Returns:
+        抽出されたヘッダーのリスト
+    """
+    headers = []
+    for line in text.split('\n'):
+        stripped_line = line.strip()
+        if stripped_line.startswith('#'):
+            headers.append(stripped_line)
+    return headers
 
 def clean_markdown_headers(text: str) -> str:
     """
@@ -82,10 +101,47 @@ def clean_markdown_headers(text: str) -> str:
     
     return '\n'.join(processed_lines)
 
+# リトライするエラーを判定する関数
+def should_retry_exception(exception):
+    """
+    リトライすべき例外かどうかを判定する関数
+    
+    Args:
+        exception: キャッチした例外
+        
+    Returns:
+        リトライすべき場合はTrue、そうでない場合はFalse
+    """
+    # 一般的なネットワークエラー
+    if isinstance(exception, (ConnectionError, TimeoutError)):
+        return True
+    
+    # HTTPエラーの場合 (requests, httpx, aiohttp などのライブラリで使用)
+    error_message = str(exception).lower()
+    
+    # タイムアウト関連のエラーメッセージをチェック
+    timeout_keywords = ['timeout', 'timed out', 'deadline exceeded', 'deadline', 'too many requests', 
+                       'rate limit', 'throttle', '504', '408', '429', '503']
+    
+    # ネットワーク関連のエラーメッセージをチェック
+    network_keywords = ['connection', 'network', 'unreachable', 'no route', 'dns', 'socket', 
+                       'connection reset', 'connection refused', 'eof', 'broken pipe']
+    
+    # サーバーエラー
+    server_keywords = ['internal server error', 'bad gateway', 'gateway timeout', 'service unavailable',
+                      '500', '502', '503', '504']
+    
+    # キーワードの検索
+    for keyword in timeout_keywords + network_keywords + server_keywords:
+        if keyword in error_message:
+            return True
+    
+    return False
+
 @retry(
     stop=stop_after_attempt(MAX_RETRIES),
-    wait=wait_exponential(multiplier=1, min=2, max=60),
-    retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+    wait=wait_exponential(multiplier=1, min=INITIAL_RETRY_DELAY, max=MAX_RETRY_DELAY),
+    retry=retry_if_exception(should_retry_exception),
     reraise=True
 )
 def call_llm_with_retry(llm_provider, model_name, prompt):
@@ -111,44 +167,83 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
             
             # 新しいGenerativeModelインターフェースを使用
             model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt, generation_config={"temperature": 0.0})
-            return response.text
+            # Geminiの場合、タイムアウトはクライアント自体に設定するのではなく、APIコール単位で設定
+            try:
+                response = model.generate_content(prompt, generation_config={"temperature": 0.0})
+                return response.text
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "deadline exceeded" in error_msg or "timeout" in error_msg:
+                    print(f"  ! Gemini API タイムアウトエラー: {str(e)}")
+                    raise TimeoutError(f"Gemini API timeout: {str(e)}")
+                raise
+                
         elif llm_provider == "openai":
             # 必要なときにだけOpenAI APIをインポート
             global openai_client
             if openai_client is None:
                 import openai
-                openai_client = openai.OpenAI(api_key=OPENAI_API_KEY, timeout=DEFAULT_TIMEOUT)
+                from openai import OpenAI
+                # クライアントタイムアウト設定
+                openai_client = OpenAI(api_key=OPENAI_API_KEY, timeout=DEFAULT_TIMEOUT)
                 print("OpenAI APIを初期化しました")
                 
-            response = openai_client.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0
-            )
-            return response.choices[0].message.content
+            try:
+                response = openai_client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.0,
+                    request_timeout=DEFAULT_TIMEOUT  # リクエスト単位のタイムアウト
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "timeout" in error_msg or "rate limit" in error_msg:
+                    print(f"  ! OpenAI API タイムアウト/レート制限エラー: {str(e)}")
+                    raise TimeoutError(f"OpenAI API timeout: {str(e)}")
+                raise
+                
         elif llm_provider in ("claude", "anthropic"):
             # 必要なときにだけAnthropic APIをインポート
             global anthropic_client
             if anthropic_client is None:
                 import anthropic
+                # クライアントタイムアウト設定
                 anthropic_client = anthropic.Client(api_key=ANTHROPIC_API_KEY, timeout=DEFAULT_TIMEOUT)
                 print("Anthropic APIを初期化しました")
                 
-            response = anthropic_client.completions.create(
-                model=model_name,
-                prompt=anthropic.HUMAN_PROMPT + prompt + anthropic.AI_PROMPT,
-                max_tokens_to_sample=10000,
-                temperature=0.0
-            )
-            return response.completion
+            try:
+                response = anthropic_client.completions.create(
+                    model=model_name,
+                    prompt=anthropic.HUMAN_PROMPT + prompt + anthropic.AI_PROMPT,
+                    max_tokens_to_sample=10000,
+                    temperature=0.0
+                )
+                return response.completion
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "timeout" in error_msg or "rate_limited" in error_msg:
+                    print(f"  ! Anthropic API タイムアウト/レート制限エラー: {str(e)}")
+                    raise TimeoutError(f"Anthropic API timeout: {str(e)}")
+                raise
         else:
             raise ValueError(f"Unknown llm_provider: {llm_provider}")
     except Exception as e:
-        print(f"  ! API呼び出しエラー (リトライします): {str(e)}")
+        retry_count = getattr(call_llm_with_retry, 'retry', 0) + 1
+        setattr(call_llm_with_retry, 'retry', retry_count)
+        
+        print(f"  ! API呼び出しエラー ({retry_count}/{MAX_RETRIES} 回目のリトライ): {str(e)}")
+        
+        # 最後のリトライであればログを詳細に記録
+        if retry_count >= MAX_RETRIES:
+            print(f"  !! すべてのリトライが失敗しました。エラーの詳細: {str(e)}")
+            # リトライカウンターをリセット
+            setattr(call_llm_with_retry, 'retry', 0)
+        
+        # 例外を再発生させてtenacityのリトライ機構に処理させる
         raise e
 
-def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provider: str = "gemini", model_name: str = None) -> str:
+def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provider: str = "gemini", model_name: str = None, previous_headers=None) -> str:
     """
     Translate the given text to the target language using the specified LLM provider.
     APIキーは.envから読み込み、google-generativeai、OpenAI、Anthropicライブラリを使用して翻訳を実行する。
@@ -159,6 +254,7 @@ def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provi
         page_info: {'current': 現在のページ番号, 'total': 合計ページ数} の形式の辞書
         llm_provider: 使用するLLMプロバイダー ("gemini", "openai", "claude", "anthropic")
         model_name: 使用するモデル名（省略時はデフォルト値を使用）
+        previous_headers: 前のページで使用されたヘッダーのリスト
     """
     try:
         # APIキーの存在確認
@@ -176,13 +272,19 @@ def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provi
         # デフォルトモデル名決定
         if model_name is None:
             if llm_provider == "gemini":
-                model_name = "gemini-1.5-flash"  # 利用可能な最新のモデル
+                model_name = "gemini-2.5-flash-preview-04-17"  # 利用可能な最新のモデル
             elif llm_provider == "openai":
-                model_name = "gpt-4o"
+                model_name = "gpt-4.1"
             elif llm_provider in ("claude", "anthropic"):
                 model_name = "claude-3.7-sonnet"
 
         # 翻訳リクエスト用のプロンプト
+        previous_headers_text = ""
+        if previous_headers and len(previous_headers) > 0:
+            previous_headers_text = "\n以下は、これまでのページで検出されたヘッダーの一覧です。これらとの一貫性を保ったヘッダーに変換してください：\n"
+            previous_headers_text += "\n".join(previous_headers)
+            previous_headers_text += "\n"
+        
         prompt = f"""あなたに渡すのは論文pdfの1ページを抽出したものです。次の文章を{target_lang}語に翻訳してください。
 翻訳された文章のみを返してください。原文に忠実に翻訳し、自分で文章を足したりスキップしたりはしないでください。専門用語は無理に日本語にせず英単語、カタカナのままでもOKです。
 だ・である調にしてください。
@@ -199,7 +301,11 @@ Markdownとして体裁を整えてください。特にヘッダーは以下の
 - 2段階(subsection)なら'##'（例：1.1、2.1、3.1→## 1.1、## 2.1、## 3.1）
 - 3段階（subsubsection）なら'###'（例：1.1.1、2.1.1、3.1.1→### 1.1.1、### 2.1.1、### 3.1.1）
 
-翻訳対象：
+---
+{previous_headers_text}
+---
+
+今回翻訳するページ：
 {text}"""
         # LLMプロバイダーを使用してリクエスト（リトライ機能付き）
         start_time = time.time()
@@ -216,13 +322,14 @@ Markdownとして体裁を整えてください。特にヘッダーは以下の
         if page_info:
             print(f"  ✓ ページ {page_info['current']}/{page_info['total']} ({char_count}文字) - {elapsed_time:.1f}秒で翻訳完了")
         
-        return result
+        return result, extract_headers(result)
     except Exception as e:
         error_msg = f"翻訳エラー: {str(e)}"
         print(error_msg)
-        return f"翻訳エラーが発生しました: {error_msg}"
+        return f"翻訳エラーが発生しました: {error_msg}", []
 
 if __name__ == "__main__":
     sample_text = "Hello, world!"
-    translated = translate_text(sample_text, "ja", llm_provider="openai")
+    translated, headers = translate_text(sample_text, "ja", llm_provider="openai")
     print("Translated text:", translated)
+    print("Extracted headers:", headers)
