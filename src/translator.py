@@ -4,7 +4,10 @@ import re
 from dotenv import load_dotenv
 # 遅延インポートのためにAPIクライアントのインポートを移動
 import tenacity
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, retry_if_exception
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import requests.exceptions
+import http.client
+import urllib.error
 
 # .envファイルの存在確認
 dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
@@ -24,15 +27,41 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 # タイムアウトとリトライの設定
-DEFAULT_TIMEOUT = 600  # デフォルトタイムアウト (秒)
-MAX_RETRIES = 3        # 最大リトライ回数
-INITIAL_RETRY_DELAY = 2  # 初期リトライ待機時間 (秒)
-MAX_RETRY_DELAY = 120    # 最大リトライ待機時間 (秒)
+DEFAULT_TIMEOUT = 300  # デフォルトタイムアウト (秒)
+MAX_RETRIES = 2        # 最大リトライ回数
+PAGE_RETRIES = 3       # ページ翻訳の最大リトライ回数
 
 # APIクライアントとモデル（遅延インポート用）
 genai = None
 openai_client = None
 anthropic_client = None
+
+# 例外をまとめたクラス定義（HTTPエラーを含む）
+class APIError(Exception):
+    """APIエラーの基底クラス"""
+    pass
+
+class HTTPStatusError(APIError):
+    """HTTPステータスエラー"""
+    def __init__(self, status_code, message=None):
+        self.status_code = status_code
+        self.message = message or f"HTTPステータスエラー: {status_code}"
+        super().__init__(self.message)
+
+# リトライ対象のエラー種類を定義
+RETRY_EXCEPTIONS = (
+    ConnectionError,
+    TimeoutError,
+    requests.exceptions.RequestException,
+    requests.exceptions.HTTPError,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    http.client.HTTPException,
+    urllib.error.HTTPError,
+    urllib.error.URLError,
+    HTTPStatusError,
+    APIError
+)
 
 def extract_headers(text: str) -> list:
     """
@@ -101,47 +130,10 @@ def clean_markdown_headers(text: str) -> str:
     
     return '\n'.join(processed_lines)
 
-# リトライするエラーを判定する関数
-def should_retry_exception(exception):
-    """
-    リトライすべき例外かどうかを判定する関数
-    
-    Args:
-        exception: キャッチした例外
-        
-    Returns:
-        リトライすべき場合はTrue、そうでない場合はFalse
-    """
-    # 一般的なネットワークエラー
-    if isinstance(exception, (ConnectionError, TimeoutError)):
-        return True
-    
-    # HTTPエラーの場合 (requests, httpx, aiohttp などのライブラリで使用)
-    error_message = str(exception).lower()
-    
-    # タイムアウト関連のエラーメッセージをチェック
-    timeout_keywords = ['timeout', 'timed out', 'deadline exceeded', 'deadline', 'too many requests', 
-                       'rate limit', 'throttle', '504', '408', '429', '503']
-    
-    # ネットワーク関連のエラーメッセージをチェック
-    network_keywords = ['connection', 'network', 'unreachable', 'no route', 'dns', 'socket', 
-                       'connection reset', 'connection refused', 'eof', 'broken pipe']
-    
-    # サーバーエラー
-    server_keywords = ['internal server error', 'bad gateway', 'gateway timeout', 'service unavailable',
-                      '500', '502', '503', '504']
-    
-    # キーワードの検索
-    for keyword in timeout_keywords + network_keywords + server_keywords:
-        if keyword in error_message:
-            return True
-    
-    return False
-
 @retry(
     stop=stop_after_attempt(MAX_RETRIES),
-    wait=wait_exponential(multiplier=1, min=INITIAL_RETRY_DELAY, max=MAX_RETRY_DELAY),
-    retry=retry_if_exception(should_retry_exception),
+    wait=wait_exponential(multiplier=1, min=2, max=60),
+    retry=retry_if_exception_type(RETRY_EXCEPTIONS),
     reraise=True
 )
 def call_llm_with_retry(llm_provider, model_name, prompt):
@@ -167,82 +159,56 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
             
             # 新しいGenerativeModelインターフェースを使用
             model = genai.GenerativeModel(model_name)
-            # Geminiの場合、タイムアウトはクライアント自体に設定するのではなく、APIコール単位で設定
-            try:
-                response = model.generate_content(prompt, generation_config={"temperature": 0.0})
-                return response.text
-            except Exception as e:
-                error_msg = str(e).lower()
-                if "deadline exceeded" in error_msg or "timeout" in error_msg:
-                    print(f"  ! Gemini API タイムアウトエラー: {str(e)}")
-                    raise TimeoutError(f"Gemini API timeout: {str(e)}")
-                raise
-                
+            response = model.generate_content(prompt, generation_config={"temperature": 0.0})
+            return response.text
         elif llm_provider == "openai":
             # 必要なときにだけOpenAI APIをインポート
             global openai_client
             if openai_client is None:
                 import openai
-                from openai import OpenAI
-                # クライアントタイムアウト設定
-                openai_client = OpenAI(api_key=OPENAI_API_KEY, timeout=DEFAULT_TIMEOUT)
+                openai_client = openai.OpenAI(api_key=OPENAI_API_KEY, timeout=DEFAULT_TIMEOUT)
                 print("OpenAI APIを初期化しました")
                 
-            try:
-                response = openai_client.chat.completions.create(
-                    model=model_name,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.0,
-                    request_timeout=DEFAULT_TIMEOUT  # リクエスト単位のタイムアウト
-                )
-                return response.choices[0].message.content
-            except Exception as e:
-                error_msg = str(e).lower()
-                if "timeout" in error_msg or "rate limit" in error_msg:
-                    print(f"  ! OpenAI API タイムアウト/レート制限エラー: {str(e)}")
-                    raise TimeoutError(f"OpenAI API timeout: {str(e)}")
-                raise
-                
+            response = openai_client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0
+            )
+            return response.choices[0].message.content
         elif llm_provider in ("claude", "anthropic"):
             # 必要なときにだけAnthropic APIをインポート
             global anthropic_client
             if anthropic_client is None:
                 import anthropic
-                # クライアントタイムアウト設定
                 anthropic_client = anthropic.Client(api_key=ANTHROPIC_API_KEY, timeout=DEFAULT_TIMEOUT)
                 print("Anthropic APIを初期化しました")
                 
-            try:
-                response = anthropic_client.completions.create(
-                    model=model_name,
-                    prompt=anthropic.HUMAN_PROMPT + prompt + anthropic.AI_PROMPT,
-                    max_tokens_to_sample=10000,
-                    temperature=0.0
-                )
-                return response.completion
-            except Exception as e:
-                error_msg = str(e).lower()
-                if "timeout" in error_msg or "rate_limited" in error_msg:
-                    print(f"  ! Anthropic API タイムアウト/レート制限エラー: {str(e)}")
-                    raise TimeoutError(f"Anthropic API timeout: {str(e)}")
-                raise
+            response = anthropic_client.completions.create(
+                model=model_name,
+                prompt=anthropic.HUMAN_PROMPT + prompt + anthropic.AI_PROMPT,
+                max_tokens_to_sample=10000,
+                temperature=0.0
+            )
+            return response.completion
         else:
             raise ValueError(f"Unknown llm_provider: {llm_provider}")
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if hasattr(e, 'response') and hasattr(e.response, 'status_code') else 0
+        print(f"  ! HTTP エラー ({status_code}): {str(e)} (リトライします)")
+        # 504エラーや503エラーの場合は特別なエラーとして再発生
+        if status_code in [503, 504]:
+            raise HTTPStatusError(status_code, f"サーバーエラー ({status_code}): {str(e)}")
+        raise e
     except Exception as e:
-        retry_count = getattr(call_llm_with_retry, 'retry', 0) + 1
-        setattr(call_llm_with_retry, 'retry', retry_count)
-        
-        print(f"  ! API呼び出しエラー ({retry_count}/{MAX_RETRIES} 回目のリトライ): {str(e)}")
-        
-        # 最後のリトライであればログを詳細に記録
-        if retry_count >= MAX_RETRIES:
-            print(f"  !! すべてのリトライが失敗しました。エラーの詳細: {str(e)}")
-            # リトライカウンターをリセット
-            setattr(call_llm_with_retry, 'retry', 0)
-        
-        # 例外を再発生させてtenacityのリトライ機構に処理させる
+        print(f"  ! API呼び出しエラー (リトライします): {str(e)}")
         raise e
 
+@retry(
+    stop=stop_after_attempt(PAGE_RETRIES),
+    wait=wait_exponential(multiplier=2, min=4, max=120),
+    retry=retry_if_exception_type(RETRY_EXCEPTIONS),
+    reraise=False  # エラーを再発生させずに最後のエラーを返す
+)
 def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provider: str = "gemini", model_name: str = None, previous_headers=None) -> str:
     """
     Translate the given text to the target language using the specified LLM provider.
@@ -257,13 +223,18 @@ def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provi
         previous_headers: 前のページで使用されたヘッダーのリスト
     """
     try:
+        # ページ情報があれば、ログに残す
+        if page_info:
+            page_msg = f"ページ {page_info['current']}/{page_info['total']} の翻訳を開始"
+            print(f"  • {page_msg}")
+            
         # APIキーの存在確認
         if llm_provider == "gemini" and not GEMINI_API_KEY:
-            return "翻訳エラー: Gemini APIキーが設定されていません。.envファイルにGEMINI_API_KEYを設定してください。"
+            return "翻訳エラー: Gemini APIキーが設定されていません。.envファイルにGEMINI_API_KEYを設定してください。", []
         elif llm_provider == "openai" and not OPENAI_API_KEY:
-            return "翻訳エラー: OpenAI APIキーが設定されていません。.envファイルにOPENAI_API_KEYを設定してください。"
+            return "翻訳エラー: OpenAI APIキーが設定されていません。.envファイルにOPENAI_API_KEYを設定してください。", []
         elif llm_provider in ("claude", "anthropic") and not ANTHROPIC_API_KEY:
-            return "翻訳エラー: Anthropic APIキーが設定されていません。.envファイルにANTHROPIC_API_KEYを設定してください。"
+            return "翻訳エラー: Anthropic APIキーが設定されていません。.envファイルにANTHROPIC_API_KEYを設定してください。", []
         
         # テキストの文字数を取得
         char_count = len(text)
@@ -323,7 +294,21 @@ Markdownとして体裁を整えてください。特にヘッダーは以下の
             print(f"  ✓ ページ {page_info['current']}/{page_info['total']} ({char_count}文字) - {elapsed_time:.1f}秒で翻訳完了")
         
         return result, extract_headers(result)
+    except RETRY_EXCEPTIONS as e:
+        # リトライ対象のエラーの場合はログを出力して再度throw（@retryデコレータがキャッチする）
+        retry_count = getattr(translate_text, 'retry', {}).get('retry_state', {}).get('attempt_number', 1) - 1
+        remaining = PAGE_RETRIES - retry_count
+        
+        if remaining > 0:
+            page_str = f"ページ {page_info['current']}/{page_info['total']}" if page_info else "現在のページ"
+            print(f"  ! {page_str} の翻訳でエラーが発生しました。リトライします (残り{remaining}回): {str(e)}")
+            raise e
+        else:
+            error_msg = f"翻訳エラー (最大リトライ回数に達しました): {str(e)}"
+            print(error_msg)
+            return f"翻訳エラーが発生しました: {error_msg}", []
     except Exception as e:
+        # リトライ対象外のエラー
         error_msg = f"翻訳エラー: {str(e)}"
         print(error_msg)
         return f"翻訳エラーが発生しました: {error_msg}", []
