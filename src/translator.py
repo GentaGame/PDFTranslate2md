@@ -28,9 +28,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 # タイムアウトとリトライの設定
-DEFAULT_TIMEOUT = 300  # デフォルトタイムアウト (秒)
-MAX_RETRIES = 2        # 最大リトライ回数
-PAGE_RETRIES = 3       # ページ翻訳の最大リトライ回数
+DEFAULT_TIMEOUT = 500  # デフォルトタイムアウト (秒)
+MAX_RETRIES = 5        # 最大リトライ回数（単一のリトライシステムに統合）
 
 # APIクライアントとモデル（遅延インポート用）
 genai = None
@@ -149,6 +148,13 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
     Returns:
         LLMからの応答テキスト
     """
+    # リトライカウントを取得
+    retry_count = 1
+    if hasattr(call_llm_with_retry, 'retry'):
+        retry_obj = getattr(call_llm_with_retry, 'retry')
+        if hasattr(retry_obj, 'statistics') and retry_obj.statistics.get('attempt_number') is not None:
+            retry_count = retry_obj.statistics.get('attempt_number')
+    
     try:
         if llm_provider == "gemini":
             # 必要なときにだけGemini APIをインポート
@@ -160,7 +166,7 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
             
             # 新しいGenerativeModelインターフェースを使用
             model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt, generation_config={"temperature": 0.0})
+            response = model.generate_content(prompt, generation_config={"temperature": 0.0, "max_output_tokens": 10000})
             return response.text
         elif llm_provider == "openai":
             # 必要なときにだけOpenAI APIをインポート
@@ -195,22 +201,42 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
             raise ValueError(f"Unknown llm_provider: {llm_provider}")
     except requests.exceptions.HTTPError as e:
         status_code = e.response.status_code if hasattr(e, 'response') and hasattr(e.response, 'status_code') else 0
-        tqdm.write(f"  ! HTTP エラー ({status_code}): {str(e)} (リトライします)")
+        
         # 504エラーや503エラーの場合は特別なエラーとして再発生
         if status_code in [503, 504]:
-            raise HTTPStatusError(status_code, f"サーバーエラー ({status_code}): {str(e)}")
+            error_msg = f"サーバータイムアウトエラー ({status_code}): {str(e)}"
+            # リトライカウントを表示
+            if retry_count > 1:
+                tqdm.write(f"  ! {status_code} タイムアウトエラー (リトライ {retry_count}/{MAX_RETRIES}): {error_msg}")
+            else:
+                tqdm.write(f"  ! {status_code} タイムアウトエラー: {error_msg}")
+            raise HTTPStatusError(status_code, error_msg)
+        
+        # その他のHTTPエラー
+        error_msg = f"HTTP エラー ({status_code}): {str(e)}"
+        if retry_count > 1:
+            tqdm.write(f"  ! HTTP エラー (リトライ {retry_count}/{MAX_RETRIES}): {error_msg}")
+        else:
+            tqdm.write(f"  ! HTTP エラー: {error_msg}")
         raise e
     except Exception as e:
-        tqdm.write(f"  ! API呼び出しエラー (リトライします): {str(e)}")
+        error_type = type(e).__name__
+        error_msg = f"{error_type}: {str(e)}"
+        
+        # リトライカウントを表示
+        if retry_count > 1:
+            tqdm.write(f"  ! API呼び出しエラー (リトライ {retry_count}/{MAX_RETRIES}): {error_msg}")
+        else:
+            tqdm.write(f"  ! API呼び出しエラー: {error_msg}")
         raise e
 
 @retry(
-    stop=stop_after_attempt(PAGE_RETRIES),
+    stop=stop_after_attempt(MAX_RETRIES),
     wait=wait_exponential(multiplier=2, min=4, max=120),
     retry=retry_if_exception_type(RETRY_EXCEPTIONS),
-    reraise=False  # エラーを再発生させずに最後のエラーを返す
+    reraise=True  # エラーを再発生させてメイン処理で捕捉する
 )
-def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provider: str = "gemini", model_name: str = None, previous_headers=None) -> str:
+def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provider: str = "gemini", model_name: str = None, previous_headers=None) -> tuple:
     """
     Translate the given text to the target language using the specified LLM provider.
     APIキーは.envから読み込み、google-generativeai、OpenAI、Anthropicライブラリを使用して翻訳を実行する。
@@ -222,6 +248,9 @@ def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provi
         llm_provider: 使用するLLMプロバイダー ("gemini", "openai", "claude", "anthropic")
         model_name: 使用するモデル名（省略時はデフォルト値を使用）
         previous_headers: 前のページで使用されたヘッダーのリスト
+        
+    Returns:
+        tuple: (翻訳されたテキスト, 抽出されたヘッダーのリスト)
     """
     try:
         # ページ情報があれば、ログに残す
@@ -278,6 +307,16 @@ Markdownとして体裁を整えてください。特にヘッダーは以下の
 
 今回翻訳するページ：
 {text}"""
+        # リトライカウントの表示
+        retry_count = 1
+        if hasattr(translate_text, 'retry'):
+            retry_obj = getattr(translate_text, 'retry')
+            if hasattr(retry_obj, 'statistics') and retry_obj.statistics.get('attempt_number') is not None:
+                retry_count = retry_obj.statistics.get('attempt_number')
+        if retry_count > 1:
+            page_str = f"ページ {page_info['current']}/{page_info['total']}" if page_info else "現在のページ"
+            tqdm.write(f"  ↻ {page_str} の翻訳を再試行中 (試行 {retry_count}/{MAX_RETRIES})")
+        
         # LLMプロバイダーを使用してリクエスト（リトライ機能付き）
         start_time = time.time()
         
@@ -291,26 +330,45 @@ Markdownとして体裁を整えてください。特にヘッダーは以下の
         
         # ページ情報があれば、ログに残す（tqdmと競合しないように）
         if page_info:
-            tqdm.write(f"  ✓ ページ {page_info['current']}/{page_info['total']} ({char_count}文字) - {elapsed_time:.1f}秒で翻訳完了")
+            if retry_count > 1:
+                tqdm.write(f"  ✓ ページ {page_info['current']}/{page_info['total']} ({char_count}文字) - {retry_count}回目の試行で {elapsed_time:.1f}秒で翻訳完了")
+            else:
+                tqdm.write(f"  ✓ ページ {page_info['current']}/{page_info['total']} ({char_count}文字) - {elapsed_time:.1f}秒で翻訳完了")
         
         return result, extract_headers(result)
     except RETRY_EXCEPTIONS as e:
-        # リトライ対象のエラーの場合はログを出力して再度throw（@retryデコレータがキャッチする）
-        retry_count = getattr(translate_text, 'retry', {}).get('retry_state', {}).get('attempt_number', 1) - 1
-        remaining = PAGE_RETRIES - retry_count
+        # リトライ対象のエラーの場合は再発生させてデコレータにキャッチさせる
+        retry_count = 1
+        if hasattr(translate_text, 'retry'):
+            retry_obj = getattr(translate_text, 'retry')
+            if hasattr(retry_obj, 'statistics') and retry_obj.statistics.get('attempt_number') is not None:
+                retry_count = retry_obj.statistics.get('attempt_number')
+        remaining = MAX_RETRIES - retry_count
         
         if remaining > 0:
+            # まだリトライ回数が残っている場合
             page_str = f"ページ {page_info['current']}/{page_info['total']}" if page_info else "現在のページ"
-            tqdm.write(f"  ! {page_str} の翻訳でエラーが発生しました。リトライします (残り{remaining}回): {str(e)}")
-            raise e
+            error_type = type(e).__name__
+            
+            # 504エラーを特別に処理
+            if isinstance(e, HTTPStatusError) and e.status_code == 504:
+                tqdm.write(f"  ! {page_str} の翻訳で「504 タイムアウトエラー」が発生しました。リトライします (残り{remaining}回)")
+            else:
+                tqdm.write(f"  ! {page_str} の翻訳で「{error_type}」エラーが発生しました。リトライします (残り{remaining}回): {str(e)}")
+            
+            # エラーを再発生させてデコレータ側でリトライさせる
+            raise
         else:
-            error_msg = f"翻訳エラー (最大リトライ回数に達しました): {str(e)}"
-            tqdm.write(error_msg)
+            # 最大リトライ回数に達した場合
+            error_type = type(e).__name__
+            error_msg = f"翻訳エラー (最大リトライ回数{MAX_RETRIES}回に達しました): {error_type} - {str(e)}"
+            tqdm.write(f"  ✗ {error_msg}")
             return f"翻訳エラーが発生しました: {error_msg}", []
     except Exception as e:
         # リトライ対象外のエラー
-        error_msg = f"翻訳エラー: {str(e)}"
-        tqdm.write(error_msg)
+        error_type = type(e).__name__
+        error_msg = f"翻訳エラー ({error_type}): {str(e)}"
+        tqdm.write(f"  ✗ {error_msg}")
         return f"翻訳エラーが発生しました: {error_msg}", []
 
 if __name__ == "__main__":

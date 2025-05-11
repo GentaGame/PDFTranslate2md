@@ -42,16 +42,23 @@ def process_pdf(input_pdf, output_dir, image_dir, llm_provider, model_name, forc
     for i, page in enumerate(tqdm(pages, desc="翻訳処理中", unit="ページ")):
         page_info = {'current': i+1, 'total': total_pages}
         # 前のページのヘッダー情報を使用して翻訳
-        translated_text, headers = translate_text(
-            page, 
-            page_info=page_info, 
-            llm_provider=llm_provider, 
-            model_name=model_name,
-            previous_headers=all_headers
-        )
-        translated_pages.append(translated_text)
-        # 新しいヘッダーを追加
-        all_headers.extend(headers)
+        try:
+            translated_text, headers = translate_text(
+                page, 
+                page_info=page_info, 
+                llm_provider=llm_provider, 
+                model_name=model_name,
+                previous_headers=all_headers
+            )
+            translated_pages.append(translated_text)
+            # 新しいヘッダーを追加
+            all_headers.extend(headers)
+        except Exception as e:
+            error_msg = f"ページ {page_info['current']}/{page_info['total']} の翻訳に失敗しました: {str(e)}"
+            tqdm.write(f"\n❌ {error_msg}")
+            # エラーメッセージを翻訳結果として追加
+            translated_pages.append(f"## 翻訳エラー\n\n{error_msg}\n\n---\n\n**原文:**\n\n{page}")
+            continue
     
     print("\n翻訳完了。Markdownファイルに書き出しています...")
     write_markdown(output_md, translated_pages, image_paths)
