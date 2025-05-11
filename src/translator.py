@@ -60,7 +60,9 @@ RETRY_EXCEPTIONS = (
     urllib.error.HTTPError,
     urllib.error.URLError,
     HTTPStatusError,
-    APIError
+    APIError,
+    # Google APIの特定エラーを追加
+    Exception  # DeadlineExceededを含むすべての例外をキャッチ
 )
 
 def extract_headers(text: str) -> list:
@@ -223,6 +225,11 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
         error_type = type(e).__name__
         error_msg = f"{error_type}: {str(e)}"
         
+        # DeadlineExceededエラーを特別に処理
+        if "DeadlineExceeded" in error_type or "Deadline Exceeded" in str(e) or "504" in str(e):
+            tqdm.write(f"  ! DeadlineExceededエラーが発生しました (リトライ {retry_count}/{MAX_RETRIES}): {error_msg}")
+            raise HTTPStatusError(504, f"DeadlineExceeded: {str(e)}")
+        
         # リトライカウントを表示
         if retry_count > 1:
             tqdm.write(f"  ! API呼び出しエラー (リトライ {retry_count}/{MAX_RETRIES}): {error_msg}")
@@ -350,8 +357,11 @@ Markdownとして体裁を整えてください。特にヘッダーは以下の
             page_str = f"ページ {page_info['current']}/{page_info['total']}" if page_info else "現在のページ"
             error_type = type(e).__name__
             
+            # DeadlineExceededエラーを特別に処理
+            if "DeadlineExceeded" in error_type or "Deadline Exceeded" in str(e) or "504" in str(e):
+                tqdm.write(f"  ! {page_str} の翻訳で「DeadlineExceeded」エラーが発生しました。リトライします (残り{remaining}回)")
             # 504エラーを特別に処理
-            if isinstance(e, HTTPStatusError) and e.status_code == 504:
+            elif isinstance(e, HTTPStatusError) and e.status_code == 504:
                 tqdm.write(f"  ! {page_str} の翻訳で「504 タイムアウトエラー」が発生しました。リトライします (残り{remaining}回)")
             else:
                 tqdm.write(f"  ! {page_str} の翻訳で「{error_type}」エラーが発生しました。リトライします (残り{remaining}回): {str(e)}")
