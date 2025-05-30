@@ -2,6 +2,7 @@ import sys
 import os
 import argparse
 import glob
+import time  # time.sleepを使用するために追加
 from tqdm import tqdm
 from pdf_extractor import extract_text, extract_images
 from markdown_writer import write_markdown
@@ -41,6 +42,7 @@ def process_pdf(input_pdf, output_dir, image_dir, llm_provider, model_name, forc
     
     for i, page in enumerate(tqdm(pages, desc="翻訳処理中", unit="ページ")):
         page_info = {'current': i+1, 'total': total_pages}
+            
         # 前のページのヘッダー情報を使用して翻訳
         try:
             translated_text, headers = translate_text(

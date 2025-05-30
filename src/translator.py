@@ -10,6 +10,14 @@ import http.client
 import urllib.error
 from tqdm.auto import tqdm  # 進捗バーと衝突しない出力用（tqdm.write使用）
 
+# レート制限ステータスを管理するグローバル変数
+rate_limit_status = {
+    "gemini": {"hit": False, "last_hit_time": 0, "waiting_period": 0},
+    "openai": {"hit": False, "last_hit_time": 0, "waiting_period": 0},
+    "anthropic": {"hit": False, "last_hit_time": 0, "waiting_period": 0},
+    "claude": {"hit": False, "last_hit_time": 0, "waiting_period": 0},
+}
+
 # .envファイルの存在確認
 dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
 if not os.path.exists(dotenv_path):
@@ -134,7 +142,7 @@ def clean_markdown_headers(text: str) -> str:
 
 @retry(
     stop=stop_after_attempt(MAX_RETRIES),
-    wait=wait_exponential(multiplier=1, min=2, max=60),
+    wait=wait_exponential(multiplier=3, min=10, max=180),  # さらに長いバックオフを設定
     retry=retry_if_exception_type(RETRY_EXCEPTIONS),
     reraise=True
 )
@@ -169,7 +177,38 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
             # 新しいGenerativeModelインターフェースを使用
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(prompt, generation_config={"temperature": 0.0, "max_output_tokens": 10000})
-            return response.text
+            
+            # レスポンスの検証 - より堅牢に
+            try:
+                # parts属性をチェック
+                if hasattr(response, 'parts') and response.parts and len(response.parts) > 0:
+                    if hasattr(response.parts[0], 'text') and response.parts[0].text:
+                        return response.parts[0].text
+                
+                # text属性を直接チェック
+                if hasattr(response, 'text') and response.text:
+                    return response.text
+                
+                # どちらも利用できない場合はエラー
+                raise APIError("Gemini APIからの応答に有効なコンテンツが含まれていません")
+            except IndexError:
+                # IndexErrorが発生した場合の特別処理
+                tqdm.write("  ! Gemini APIレスポンスに問題があります。空のレスポンスやparts配列の問題かもしれません")
+                
+                # responseの内容をデバッグ出力
+                response_repr = str(response)
+                tqdm.write(f"  Debug - レスポンス構造: {response_repr[:100]}...")
+                
+                # 代替の取得方法を試す
+                try:
+                    if hasattr(response, 'candidates') and response.candidates:
+                        return response.candidates[0].content.parts[0].text
+                    if hasattr(response, 'text'):
+                        return response.text
+                except:
+                    pass
+                    
+                raise APIError("Gemini APIからの応答の処理中にIndexErrorが発生しました")
         elif llm_provider == "openai":
             # 必要なときにだけOpenAI APIをインポート
             global openai_client
@@ -183,22 +222,39 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0
             )
+            
+            # レスポンスの検証
+            if not response.choices or len(response.choices) == 0:
+                raise APIError("OpenAI APIからの応答にchoicesが含まれていません")
+            
+            if not hasattr(response.choices[0], 'message') or not hasattr(response.choices[0].message, 'content'):
+                raise APIError("OpenAI APIからの応答の形式が不正です")
+            
             return response.choices[0].message.content
         elif llm_provider in ("claude", "anthropic"):
             # 必要なときにだけAnthropic APIをインポート
             global anthropic_client
             if anthropic_client is None:
                 import anthropic
-                anthropic_client = anthropic.Client(api_key=ANTHROPIC_API_KEY, timeout=DEFAULT_TIMEOUT)
+                anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=DEFAULT_TIMEOUT)
                 tqdm.write("Anthropic APIを初期化しました")
                 
-            response = anthropic_client.completions.create(
+            response = anthropic_client.messages.create(
                 model=model_name,
-                prompt=anthropic.HUMAN_PROMPT + prompt + anthropic.AI_PROMPT,
-                max_tokens_to_sample=10000,
-                temperature=0.0
+                max_tokens=10000,
+                temperature=0.0,
+                messages=[{"role": "user", "content": prompt}]
             )
-            return response.completion
+            
+            # レスポンスの検証
+            if not hasattr(response, 'content') or not response.content or len(response.content) == 0:
+                raise APIError("Anthropic APIからの応答にcontentが含まれていません")
+            
+            # content[0]が存在するかチェック
+            if not hasattr(response.content[0], 'text'):
+                raise APIError("Anthropic APIからの応答の形式が不正です")
+            
+            return response.content[0].text
         else:
             raise ValueError(f"Unknown llm_provider: {llm_provider}")
     except requests.exceptions.HTTPError as e:
@@ -214,6 +270,40 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
                 tqdm.write(f"  ! {status_code} タイムアウトエラー: {error_msg}")
             raise HTTPStatusError(status_code, error_msg)
         
+        # レート制限エラー (429) の処理
+        elif status_code == 429:
+            error_msg = f"レート制限エラー (429): {str(e)}"
+            
+            # グローバルレート制限状態を更新
+            rate_limit_status[llm_provider]["hit"] = True
+            rate_limit_status[llm_provider]["last_hit_time"] = time.time()
+            
+            # レスポンスから遅延時間情報を取得（あれば）
+            retry_delay = None
+            if hasattr(e, 'response') and hasattr(e.response, 'text'):
+                try:
+                    error_json = e.response.json()
+                    if 'retry_delay' in error_json:
+                        retry_seconds = error_json['retry_delay'].get('seconds', 0)
+                        if retry_seconds > 0:
+                            retry_delay = retry_seconds
+                except:
+                    pass
+            
+            # APIが推奨する待機時間があればそれを使用、なければ独自の計算式
+            if retry_delay:
+                wait_time = retry_delay + 10  # APIの推奨+余裕
+            else:
+                # より長い待機時間を設定（リトライ回数に応じて指数的に増加）
+                wait_time = 60 + (retry_count * retry_count * 10)
+            
+            # 待機時間を記録
+            rate_limit_status[llm_provider]["waiting_period"] = wait_time
+            
+            tqdm.write(f"  ! レート制限に達しました (リトライ {retry_count}/{MAX_RETRIES}): {wait_time}秒待機します")
+            time.sleep(wait_time)  # 明示的な待機
+            raise HTTPStatusError(429, error_msg)
+        
         # その他のHTTPエラー
         error_msg = f"HTTP エラー ({status_code}): {str(e)}"
         if retry_count > 1:
@@ -224,6 +314,43 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
     except Exception as e:
         error_type = type(e).__name__
         error_msg = f"{error_type}: {str(e)}"
+        
+        # IndexErrorの詳細な情報を追加
+        if isinstance(e, IndexError):
+            import traceback
+            tqdm.write(f"  ! IndexError詳細: {traceback.format_exc()}")
+        
+        # ResourceExhaustedエラー（レート制限）の処理
+        if "ResourceExhausted" in error_type or "ResourceExhausted" in str(e) or "429" in str(e):
+            # レート制限状態を更新
+            rate_limit_status[llm_provider]["hit"] = True
+            rate_limit_status[llm_provider]["last_hit_time"] = time.time()
+            
+            # レスポンスから遅延時間情報を取得（あれば）
+            retry_delay = None
+            if hasattr(e, 'response') and hasattr(e.response, 'text'):
+                try:
+                    error_json = e.response.json()
+                    if 'retry_delay' in error_json:
+                        retry_seconds = error_json['retry_delay'].get('seconds', 0)
+                        if retry_seconds > 0:
+                            retry_delay = retry_seconds
+                except:
+                    pass
+            
+            # 待機時間を設定
+            if retry_delay:
+                wait_time = retry_delay + 5  # APIが推奨する時間+余裕
+            else:
+                # より長い待機時間を設定（リトライ回数に応じて増加）
+                wait_time = 60 + (retry_count * 20)  
+            
+            # 待機時間を記録
+            rate_limit_status[llm_provider]["waiting_period"] = wait_time
+            
+            tqdm.write(f"  ! レート制限エラーが発生しました (リトライ {retry_count}/{MAX_RETRIES}): {wait_time}秒待機します")
+            time.sleep(wait_time)  # 明示的な待機
+            raise HTTPStatusError(429, f"レート制限エラー: {str(e)}")
         
         # DeadlineExceededエラーを特別に処理
         if "DeadlineExceeded" in error_type or "Deadline Exceeded" in str(e) or "504" in str(e):
@@ -239,7 +366,7 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
 
 @retry(
     stop=stop_after_attempt(MAX_RETRIES),
-    wait=wait_exponential(multiplier=2, min=4, max=120),
+    wait=wait_exponential(multiplier=4, min=15, max=240),  # さらに長いバックオフを設定
     retry=retry_if_exception_type(RETRY_EXCEPTIONS),
     reraise=True  # エラーを再発生させてメイン処理で捕捉する
 )
@@ -260,6 +387,23 @@ def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provi
         tuple: (翻訳されたテキスト, 抽出されたヘッダーのリスト)
     """
     try:
+        # レート制限状態を確認
+        if rate_limit_status[llm_provider]["hit"]:
+            current_time = time.time()
+            elapsed_since_hit = current_time - rate_limit_status[llm_provider]["last_hit_time"]
+            waiting_period = rate_limit_status[llm_provider]["waiting_period"]
+            
+            # 前回のレート制限からの経過時間が待機時間より少なければ待機
+            if elapsed_since_hit < waiting_period:
+                remaining_wait = waiting_period - elapsed_since_hit
+                if remaining_wait > 0:
+                    tqdm.write(f"  ⏱️ 前回のレート制限から {waiting_period}秒経過するまであと{remaining_wait:.1f}秒待機します")
+                    time.sleep(remaining_wait)
+            else:
+                # 待機時間が経過したらレート制限フラグをリセット
+                rate_limit_status[llm_provider]["hit"] = False
+                tqdm.write(f"  ✓ レート制限の待機時間が経過しました。通常処理を再開します。")
+        
         # ページ情報があれば、ログに残す
         if page_info:
             page_msg = f"ページ {page_info['current']}/{page_info['total']} の翻訳を開始"
