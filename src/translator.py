@@ -9,6 +9,7 @@ import requests.exceptions
 import http.client
 import urllib.error
 from tqdm.auto import tqdm  # 進捗バーと衝突しない出力用（tqdm.write使用）
+from unicode_handler import normalize_unicode_text, validate_text_for_api, detect_surrogate_pairs
 
 # レート制限ステータスを管理するグローバル変数
 rate_limit_status = {
@@ -69,9 +70,139 @@ RETRY_EXCEPTIONS = (
     urllib.error.URLError,
     HTTPStatusError,
     APIError,
+    UnicodeEncodeError,  # Unicode処理エラーを追加
     # Google APIの特定エラーを追加
     Exception  # DeadlineExceededを含むすべての例外をキャッチ
 )
+
+def extract_gemini_response_text(response) -> str:
+    """
+    Gemini APIレスポンスからテキストを安全に抽出するヘルパー関数
+    
+    Args:
+        response: Gemini APIのレスポンスオブジェクト
+        
+    Returns:
+        抽出されたテキスト
+        
+    Raises:
+        APIError: テキストの抽出に失敗した場合
+    """
+    try:
+        # 🔍 DEBUG: Gemini APIレスポンスの詳細ログ
+        tqdm.write(f"  🔍 DEBUG - Gemini APIレスポンス調査:")
+        tqdm.write(f"    - response type: {type(response)}")
+        tqdm.write(f"    - hasattr candidates: {hasattr(response, 'candidates')}")
+        
+        if hasattr(response, 'candidates'):
+            tqdm.write(f"    - candidates type: {type(response.candidates)}")
+            tqdm.write(f"    - candidates length: {len(response.candidates) if response.candidates else 'None'}")
+            if response.candidates and len(response.candidates) > 0:
+                tqdm.write(f"    - candidate[0] type: {type(response.candidates[0])}")
+        
+        # 1. candidates構造をまず確認（最も一般的）
+        if hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0:
+            tqdm.write(f"  🔍 DEBUG - candidates配列にアクセス中... 長さ: {len(response.candidates)}")
+            
+            try:
+                candidate = response.candidates[0]
+                tqdm.write(f"  🔍 DEBUG - candidate[0]取得成功, type: {type(candidate)}")
+            except IndexError as idx_err:
+                tqdm.write(f"  ❌ DEBUG - candidates[0]でIndexError: {str(idx_err)}")
+                raise APIError(f"Gemini APIのcandidates配列が空です - IndexError: {str(idx_err)}")
+            
+            if hasattr(candidate, 'content') and candidate.content:
+                tqdm.write(f"  🔍 DEBUG - content存在確認, type: {type(candidate.content)}")
+                if hasattr(candidate.content, 'parts') and candidate.content.parts and len(candidate.content.parts) > 0:
+                    tqdm.write(f"  🔍 DEBUG - parts配列にアクセス中... 長さ: {len(candidate.content.parts)}")
+                    
+                    try:
+                        part = candidate.content.parts[0]
+                        tqdm.write(f"  🔍 DEBUG - parts[0]取得成功, type: {type(part)}")
+                    except IndexError as idx_err:
+                        tqdm.write(f"  ❌ DEBUG - parts[0]でIndexError: {str(idx_err)}")
+                        raise APIError(f"Gemini APIのparts配列が空です - IndexError: {str(idx_err)}")
+                    
+                    if hasattr(part, 'text') and part.text:
+                        tqdm.write(f"  ✅ DEBUG - テキスト取得成功, 長さ: {len(part.text)}")
+                        return part.text
+                    else:
+                        tqdm.write(f"  ⚠️ DEBUG - parts[0].textが空またはなし")
+                else:
+                    tqdm.write(f"  ⚠️ DEBUG - partsが空またはなし")
+            else:
+                tqdm.write(f"  ⚠️ DEBUG - contentが空またはなし")
+        else:
+            tqdm.write(f"  ⚠️ DEBUG - candidatesが空またはなし")
+        
+        # 2. 直接text属性をチェック
+        if hasattr(response, 'text') and response.text:
+            return response.text
+        
+        # 3. parts属性を直接チェック（fallback）
+        if hasattr(response, 'parts') and response.parts and len(response.parts) > 0:
+            if hasattr(response.parts[0], 'text') and response.parts[0].text:
+                return response.parts[0].text
+        
+        # 4. レスポンスをより詳細に調査
+        tqdm.write("  ! Gemini APIレスポンスの構造を詳細調査中...")
+        
+        # responseの属性をデバッグ出力
+        response_attrs = [attr for attr in dir(response) if not attr.startswith('_')]
+        tqdm.write(f"  Debug - 利用可能な属性: {response_attrs}")
+        
+        # 各属性の値を確認
+        for attr in ['candidates', 'parts', 'text']:
+            if hasattr(response, attr):
+                attr_value = getattr(response, attr)
+                tqdm.write(f"  Debug - {attr}: {type(attr_value)} - {str(attr_value)[:100]}...")
+        
+        # 最後の手段として空でないテキストを探す
+        if hasattr(response, 'candidates') and response.candidates:
+            for i, candidate in enumerate(response.candidates):
+                try:
+                    if hasattr(candidate, 'content') and candidate.content:
+                        if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                            for j, part in enumerate(candidate.content.parts):
+                                if hasattr(part, 'text') and part.text and part.text.strip():
+                                    tqdm.write(f"  ✓ 候補{i}のパート{j}からテキストを取得")
+                                    return part.text
+                except (IndexError, AttributeError) as inner_error:
+                    tqdm.write(f"  Debug - 候補{i}処理エラー: {str(inner_error)}")
+                    continue
+        
+        # まだ見つからない場合は他の属性を確認
+        for attr_name in ['text', '_result', 'result']:
+            if hasattr(response, attr_name):
+                attr_value = getattr(response, attr_name)
+                if attr_value and str(attr_value).strip():
+                    tqdm.write(f"  ✓ {attr_name}属性からテキストを取得")
+                    return str(attr_value)
+        
+        # どの方法でも取得できない場合はエラー
+        raise APIError("Gemini APIからの応答に有効なコンテンツが含まれていません")
+        
+    except IndexError as idx_error:
+        # 🔍 IndexErrorの詳細な診断情報を追加
+        import traceback
+        tqdm.write(f"  ❌ CRITICAL - Gemini APIレスポンス処理でIndexError発生:")
+        tqdm.write(f"    - エラー詳細: {str(idx_error)}")
+        tqdm.write(f"    - スタックトレース:")
+        for line in traceback.format_exc().split('\n'):
+            if line.strip():
+                tqdm.write(f"      {line}")
+        
+        # レスポンスオブジェクトの詳細情報を出力
+        tqdm.write(f"  🔍 レスポンスオブジェクトの緊急診断:")
+        try:
+            tqdm.write(f"    - response.__dict__: {response.__dict__ if hasattr(response, '__dict__') else 'なし'}")
+        except:
+            tqdm.write(f"    - response.__dict__取得失敗")
+        
+        raise APIError(f"Gemini APIからの応答の処理中にIndexErrorが発生しました: {str(idx_error)}")
+    except Exception as other_error:
+        tqdm.write(f"  ! レスポンス処理で予期しないエラー: {str(other_error)}")
+        raise APIError(f"Gemini APIレスポンス処理エラー: {str(other_error)}")
 
 def extract_headers(text: str) -> list:
     """
@@ -172,43 +303,29 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
             if genai is None:
                 from google import generativeai as genai
                 genai.configure(api_key=GEMINI_API_KEY)
-                tqdm.write("Gemini APIを初期化しました")
+                # バージョン情報を取得
+                try:
+                    import google.generativeai
+                    version_info = getattr(google.generativeai, '__version__', 'unknown')
+                    tqdm.write(f"Gemini API ({version_info}) を初期化しました")
+                except:
+                    tqdm.write("Gemini APIを初期化しました")
             
             # 新しいGenerativeModelインターフェースを使用
+            # 🔍 DEBUG: API呼び出し前の情報
+            tqdm.write(f"  🔍 DEBUG - Gemini API呼び出し:")
+            tqdm.write(f"    - model_name: {model_name}")
+            tqdm.write(f"    - prompt length: {len(prompt)} 文字")
+            
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(prompt, generation_config={"temperature": 0.0, "max_output_tokens": 10000})
             
-            # レスポンスの検証 - より堅牢に
-            try:
-                # parts属性をチェック
-                if hasattr(response, 'parts') and response.parts and len(response.parts) > 0:
-                    if hasattr(response.parts[0], 'text') and response.parts[0].text:
-                        return response.parts[0].text
-                
-                # text属性を直接チェック
-                if hasattr(response, 'text') and response.text:
-                    return response.text
-                
-                # どちらも利用できない場合はエラー
-                raise APIError("Gemini APIからの応答に有効なコンテンツが含まれていません")
-            except IndexError:
-                # IndexErrorが発生した場合の特別処理
-                tqdm.write("  ! Gemini APIレスポンスに問題があります。空のレスポンスやparts配列の問題かもしれません")
-                
-                # responseの内容をデバッグ出力
-                response_repr = str(response)
-                tqdm.write(f"  Debug - レスポンス構造: {response_repr[:100]}...")
-                
-                # 代替の取得方法を試す
-                try:
-                    if hasattr(response, 'candidates') and response.candidates:
-                        return response.candidates[0].content.parts[0].text
-                    if hasattr(response, 'text'):
-                        return response.text
-                except:
-                    pass
-                    
-                raise APIError("Gemini APIからの応答の処理中にIndexErrorが発生しました")
+            # 🔍 DEBUG: API応答後の情報
+            tqdm.write(f"  🔍 DEBUG - Gemini API応答受信:")
+            tqdm.write(f"    - response received: {response is not None}")
+            
+            # ヘルパー関数を使用してレスポンスからテキストを安全に抽出
+            return extract_gemini_response_text(response)
         elif llm_provider == "openai":
             # 必要なときにだけOpenAI APIをインポート
             global openai_client
@@ -310,6 +427,48 @@ def call_llm_with_retry(llm_provider, model_name, prompt):
             tqdm.write(f"  ! HTTP エラー (リトライ {retry_count}/{MAX_RETRIES}): {error_msg}")
         else:
             tqdm.write(f"  ! HTTP エラー: {error_msg}")
+        raise e
+    except UnicodeEncodeError as e:
+        # UnicodeEncodeError専用の処理
+        error_msg = f"UnicodeEncodeError: {str(e)}"
+        tqdm.write(f"  ! Unicode処理エラーが発生しました: {error_msg}")
+        
+        # プロンプトの再処理を試行
+        try:
+            tqdm.write(f"  🔧 プロンプトのUnicode正規化を実行中...")
+            normalized_prompt, was_modified = normalize_unicode_text(prompt, aggressive=True)
+            
+            if was_modified:
+                tqdm.write(f"  ↻ 正規化されたプロンプトで再試行中...")
+                # 正規化されたプロンプトで再度API呼び出し
+                if llm_provider == "gemini":
+                    model = genai.GenerativeModel(model_name)
+                    response = model.generate_content(normalized_prompt, generation_config={"temperature": 0.0, "max_output_tokens": 10000})
+                    
+                    # ヘルパー関数を使用してレスポンスからテキストを安全に抽出
+                    return extract_gemini_response_text(response)
+                elif llm_provider == "openai":
+                    response = openai_client.chat.completions.create(
+                        model=model_name,
+                        messages=[{"role": "user", "content": normalized_prompt}],
+                        temperature=0.0
+                    )
+                    return response.choices[0].message.content
+                elif llm_provider in ("claude", "anthropic"):
+                    response = anthropic_client.messages.create(
+                        model=model_name,
+                        max_tokens=10000,
+                        temperature=0.0,
+                        messages=[{"role": "user", "content": normalized_prompt}]
+                    )
+                    return response.content[0].text
+            else:
+                tqdm.write(f"  ❓ プロンプトの正規化による変更はありませんでした")
+                
+        except Exception as retry_error:
+            tqdm.write(f"  ! 正規化後の再試行も失敗しました: {str(retry_error)}")
+        
+        # 最終的にUnicodeEncodeErrorとして再発生
         raise e
     except Exception as e:
         error_type = type(e).__name__
@@ -418,6 +577,32 @@ def translate_text(text: str, target_lang: str = "ja", page_info=None, llm_provi
         
         # テキストの文字数を取得
         char_count = len(text)
+        
+        # テキストのUnicode安全性を事前チェック
+        is_safe, unicode_error = validate_text_for_api(text)
+        if not is_safe:
+            tqdm.write(f"  ⚠️ Unicode問題が検出されました: {unicode_error}")
+            tqdm.write(f"  🔧 テキストの正規化を実行中...")
+            
+            # Unicode正規化を適用
+            normalized_text, was_modified = normalize_unicode_text(text, aggressive=False)
+            
+            if was_modified:
+                tqdm.write(f"  ✓ Unicode正規化が適用されました")
+                text = normalized_text
+                char_count = len(text)
+                
+                # 再度安全性をチェック
+                is_safe_after, error_after = validate_text_for_api(text)
+                if not is_safe_after:
+                    tqdm.write(f"  ⚠️ 積極的な正規化を試行中...")
+                    # より積極的な正規化を試行
+                    aggressive_text, _ = normalize_unicode_text(text, aggressive=True)
+                    text = aggressive_text
+                    char_count = len(text)
+                    tqdm.write(f"  ✓ 積極的な正規化が完了しました")
+            else:
+                tqdm.write(f"  ❓ 正規化による変更はありませんでした")
         
         # モデルとプロンプト準備
         # デフォルトモデル名決定

@@ -3,6 +3,7 @@ import os
 import argparse
 import glob
 import time  # time.sleepを使用するために追加
+import logging
 from tqdm import tqdm
 from pdf_extractor import extract_text, extract_images
 from markdown_writer import write_markdown
@@ -69,6 +70,20 @@ def process_pdf(input_pdf, output_dir, image_dir, llm_provider, model_name, forc
     return output_md
 
 def main():
+    # ログ設定
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('pdftranslate2md.log', encoding='utf-8'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    
+    # Unicode処理のためのより詳細なログレベル設定
+    unicode_logger = logging.getLogger('unicode_handler')
+    unicode_logger.setLevel(logging.INFO)
+    
     # コマンドライン引数の処理
     parser = argparse.ArgumentParser(description='PDFから翻訳されたMarkdownファイルを生成するツール')
     parser.add_argument('input', help='入力PDFファイルまたはPDFファイルを含むディレクトリのパス')
@@ -77,8 +92,17 @@ def main():
     parser.add_argument('-p', '--provider', help='使用するLLMプロバイダー（gemini, openai, claude, anthropic）', default='gemini')
     parser.add_argument('-m', '--model-name', help='LLMモデル名（指定しない場合はプロバイダーのデフォルト）')
     parser.add_argument('-f', '--force', help='既存のMarkdownファイルが存在する場合も強制的に上書きする', action='store_true')
+    parser.add_argument('--unicode-debug', help='Unicode処理の詳細ログを出力する', action='store_true')
 
     args = parser.parse_args()
+    
+    # Unicode処理のデバッグ設定
+    if args.unicode_debug:
+        unicode_logger.setLevel(logging.DEBUG)
+        logging.getLogger('pdf_extractor').setLevel(logging.DEBUG)
+        logging.getLogger('translator').setLevel(logging.DEBUG)
+        logging.getLogger('markdown_writer').setLevel(logging.DEBUG)
+        print("Unicode処理の詳細ログを有効にしました")
     
     # 起動メッセージ表示
     print("PDFTranslate2md を起動中...")

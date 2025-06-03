@@ -2,21 +2,47 @@ import PyPDF2
 import os
 import fitz  # PyMuPDF
 import argparse
+import logging
+from unicode_handler import normalize_unicode_text, detect_surrogate_pairs
 
 def extract_text(pdf_path: str) -> list:
     """
     Extract text from each page in the PDF file and
     return a list of text where each element corresponds to a page.
+    Unicode文字の正規化処理も含む。
     """
     pages_text = []
+    logger = logging.getLogger(__name__)
+    
     with open(pdf_path, "rb") as pdf_file:
         reader = PyPDF2.PdfReader(pdf_file)
-        for page in reader.pages:
+        total_pages = len(reader.pages)
+        logger.info(f"PDFから {total_pages} ページのテキストを抽出開始")
+        
+        for page_num, page in enumerate(reader.pages, 1):
             text = page.extract_text()
+            
             if text:
-                pages_text.append(text)
+                # サロゲートペア文字の検出
+                if detect_surrogate_pairs(text):
+                    logger.warning(f"ページ {page_num}: サロゲートペア文字が検出されました")
+                    
+                    # Unicode正規化処理
+                    normalized_text, was_modified = normalize_unicode_text(text)
+                    
+                    if was_modified:
+                        logger.info(f"ページ {page_num}: Unicode正規化が適用されました")
+                        char_count_before = len(text)
+                        char_count_after = len(normalized_text)
+                        logger.debug(f"文字数: {char_count_before} → {char_count_after}")
+                    
+                    pages_text.append(normalized_text)
+                else:
+                    pages_text.append(text)
             else:
                 pages_text.append("")
+                
+    logger.info(f"テキスト抽出完了: {len(pages_text)} ページ")
     return pages_text
 
 def extract_images(pdf_path: str, output_dir: str) -> list:
