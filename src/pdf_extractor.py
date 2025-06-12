@@ -3,7 +3,7 @@ import os
 import fitz  # PyMuPDF
 import argparse
 import logging
-from unicode_handler import normalize_unicode_text, detect_surrogate_pairs
+from src.unicode_handler import normalize_unicode_text, detect_surrogate_pairs
 
 def extract_text(pdf_path: str) -> list:
     """
