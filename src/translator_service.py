@@ -296,8 +296,8 @@ Markdownとして体裁を整えてください。特にヘッダーは以下の
                 worker_thread.join(timeout=0.1)
                 
                 # tqdmでの進捗表示
-                if int(elapsed) % 5 == 0 and elapsed > 0:  # 5秒ごと
-                    tqdm.write(f"  ⏳ [GUI-DEBUG] API応答待機中... ({elapsed:.0f}/{timeout_seconds}秒)")
+                # if int(elapsed) % 5 == 0 and elapsed > 0:  # 5秒ごと
+                #     tqdm.write(f"  ⏳ [GUI-DEBUG] API応答待機中... ({elapsed:.0f}/{timeout_seconds}秒)")
             
             # 例外が発生した場合
             if not exception_queue.empty():
