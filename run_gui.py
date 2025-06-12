@@ -14,6 +14,22 @@ import platform
 from pathlib import Path
 
 
+def setup_qt_environment():
+    """Qt環境の自動設定（macOS対応）"""
+    if platform.system() == "Darwin":  # macOS
+        try:
+            import PyQt5
+            # PyQt5のプラグインパスを自動設定
+            qt_plugin_path = os.path.join(PyQt5.__path__[0], 'Qt5', 'plugins')
+            if os.path.exists(qt_plugin_path):
+                os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = qt_plugin_path
+                print(f"🔧 Qt プラットフォームプラグインパスを設定: {qt_plugin_path}")
+            else:
+                print(f"⚠️  Qt プラグインディレクトリが見つかりません: {qt_plugin_path}")
+        except ImportError:
+            print("⚠️  PyQt5がインポートできないため、Qt環境設定をスキップします")
+
+
 def check_environment_basic():
     """基本的な環境チェック"""
     issues = []
@@ -98,7 +114,7 @@ def display_error_help(issues):
         print("  2. pip install -r requirements-gui.txt")
         
         if platform.system() == "Darwin":  # macOS
-            print("  3. macOSの場合、以下の環境変数設定も試してください:")
+            print("  3. macOSの場合、Qt環境は自動設定されますが、問題が続く場合は手動設定も可能です:")
             print("     export QT_QPA_PLATFORM_PLUGIN_PATH=$(python -c \"import PyQt5; print(PyQt5.__path__[0])\")/Qt5/plugins")
     
     print()
@@ -115,6 +131,9 @@ def main():
     # プロジェクトルートをパスに追加
     project_root = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, project_root)
+    
+    # Qt環境の自動設定（GUI起動前に実行）
+    setup_qt_environment()
     
     # コマンドライン引数の解析
     parser = argparse.ArgumentParser(
