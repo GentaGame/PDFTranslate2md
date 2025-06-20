@@ -322,11 +322,13 @@ class FileDropWidget(QFrame):
             }}
         """
         self.path_label.setStyleSheet(path_style)
+
+        # --- ここからラベルのボーダー・ホバーを明示的にリセット ---
+        self.icon_label.setStyleSheet("color: {}; background: none; border: none;".format(colors['text_primary']))
+        self.main_label.setStyleSheet("color: {}; background: none; border: none; font-weight: bold;".format(colors['text_primary']))
+        self.sub_label.setStyleSheet("color: {}; background: none; border: none;".format(colors['text_secondary']))
+        # --- ここまで ---
         
         # ボタンのスタイル
         self.select_button.setStyleSheet(theme_manager.generate_button_style("primary"))
         self.clear_button.setStyleSheet(theme_manager.generate_button_style("danger"))
-        
-        # サブメッセージの色
-        sub_style = f"color: {colors['text_secondary']};"
-        self.sub_label.setStyleSheet(sub_style)
