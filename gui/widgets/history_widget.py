@@ -184,48 +184,21 @@ class HistoryWidget(QWidget):
         self.refresh_button.setToolTip("履歴を更新")
         self.refresh_button.clicked.connect(self._refresh_histories)
         self.refresh_button.setFixedSize(30, 30)
-        self.refresh_button.setStyleSheet("""
-            QPushButton {
-                border: 1px solid #bdc3c7;
-                border-radius: 15px;
-                background-color: #ecf0f1;
-            }
-            QPushButton:hover {
-                background-color: #d5dbdb;
-            }
-        """)
+        # スタイルはテーマ適用時に設定
         header_layout.addWidget(self.refresh_button)
         
         self.menu_button = QPushButton("⋮")
         self.menu_button.setToolTip("履歴管理メニュー")
         self.menu_button.clicked.connect(self._show_menu)
         self.menu_button.setFixedSize(30, 30)
-        self.menu_button.setStyleSheet("""
-            QPushButton {
-                border: 1px solid #bdc3c7;
-                border-radius: 15px;
-                background-color: #ecf0f1;
-            }
-            QPushButton:hover {
-                background-color: #d5dbdb;
-            }
-        """)
+        # スタイルはテーマ適用時に設定
         header_layout.addWidget(self.menu_button)
         
         layout.addLayout(header_layout)
         
         # 統計情報
         self.stats_label = QLabel("")
-        self.stats_label.setStyleSheet("""
-            QLabel {
-                color: #7f8c8d;
-                font-size: 11px;
-                padding: 4px;
-                background-color: #f8f9fa;
-                border-radius: 4px;
-                border: 1px solid #e9ecef;
-            }
-        """)
+        # スタイルはテーマ適用時に設定
         layout.addWidget(self.stats_label)
         
         # 履歴リスト
@@ -243,45 +216,13 @@ class HistoryWidget(QWidget):
         self.apply_button = QPushButton("📋 設定を適用")
         self.apply_button.clicked.connect(self._apply_selected_history)
         self.apply_button.setEnabled(False)
-        self.apply_button.setStyleSheet("""
-            QPushButton {
-                padding: 8px 16px;
-                background-color: #3498db;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                font-weight: bold;
-            }
-            QPushButton:hover:enabled {
-                background-color: #2980b9;
-            }
-            QPushButton:disabled {
-                background-color: #bdc3c7;
-                color: #7f8c8d;
-            }
-        """)
+        # スタイルはテーマ適用時に設定
         button_layout.addWidget(self.apply_button)
         
         self.delete_button = QPushButton("🗑️ 削除")
         self.delete_button.clicked.connect(self._delete_selected_history)
         self.delete_button.setEnabled(False)
-        self.delete_button.setStyleSheet("""
-            QPushButton {
-                padding: 8px 16px;
-                background-color: #e74c3c;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                font-weight: bold;
-            }
-            QPushButton:hover:enabled {
-                background-color: #c0392b;
-            }
-            QPushButton:disabled {
-                background-color: #bdc3c7;
-                color: #7f8c8d;
-            }
-        """)
+        # スタイルはテーマ適用時に設定
         button_layout.addWidget(self.delete_button)
         
         button_layout.addStretch()

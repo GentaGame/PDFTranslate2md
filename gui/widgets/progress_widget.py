@@ -296,9 +296,26 @@ class ProgressWidget(QWidget):
     def add_log(self, level: str, message: str):
         """ログメッセージを追加"""
         from datetime import datetime
+        import html
         
         # タイムスタンプを追加
         timestamp = datetime.now().strftime("%H:%M:%S")
+        
+        # メッセージの前処理：HTMLエスケープと改行変換（全改行コード対応）
+        escaped_message = html.escape(message)
+        # \r\n, \r, \n すべてを <br> に変換
+        import re
+        formatted_content = re.sub(r'(\r\n|\r|\n)', '<br>', escaped_message)
+        
+        # テーマカラーを取得（テーマが設定されている場合）
+        if hasattr(self, 'theme_manager') and self.theme_manager:
+            colors = self.theme_manager.get_colors()
+            timestamp_color = colors['text_secondary']
+            text_color = colors['text_primary']
+        else:
+            # フォールバック色
+            timestamp_color = "#6c757d"
+            text_color = "#333333"
         
         # レベルに応じてスタイルを設定
         if level == LogLevel.ERROR:
@@ -314,14 +331,15 @@ class ProgressWidget(QWidget):
             color = "#6c757d"
             prefix = "🔍"
         
-        # HTMLでフォーマット
-        formatted_message = f'''
-        <div style="margin: 2px 0;">
-            <span style="color: #6c757d;">[{timestamp}]</span>
-            <span style="color: {color}; font-weight: bold;">{prefix} {level}:</span>
-            <span>{message}</span>
-        </div>
-        '''
+        # HTMLでフォーマット（テーマ対応）
+        import textwrap
+        formatted_message = textwrap.dedent(f"""\
+            <div style="margin: 2px 0; color: {text_color};">
+                <span style="color: {timestamp_color};">[{timestamp}]</span>
+                <span style="color: {color}; font-weight: bold;">{prefix} {level}:</span>
+                <span>{formatted_content}</span>
+            </div>
+        """)
         
         # ログに追加
         cursor = self.log_text.textCursor()
@@ -377,15 +395,16 @@ class ProgressWidget(QWidget):
         self.overall_progress.setStyleSheet(theme_manager.generate_progress_style("overall"))
         self.file_progress.setStyleSheet(theme_manager.generate_progress_style("file"))
         
-        # ログテキストのスタイル
-        self.log_text.setStyleSheet(theme_manager.generate_log_style())
+        # ログテキストのスタイル（HTMLコンテンツとの整合性を確保）
+        log_style = theme_manager.generate_log_style()
+        self.log_text.setStyleSheet(log_style)
         
         # フレームのスタイル（進捗情報とログセクション）
         frame_style = theme_manager.generate_frame_style("default")
-        for widget in [self.parent().findChild(QFrame) for widget in [self] if widget]:
-            if hasattr(widget, 'setStyleSheet'):
-                # フレームを見つけて適用
-                pass
+        # ウィジェット内のすべてのフレームにスタイルを適用
+        frames = self.findChildren(QFrame)
+        for frame in frames:
+            frame.setStyleSheet(frame_style)
         
         # ステータスラベルの色を更新
         status_style = f"""
@@ -403,3 +422,20 @@ class ProgressWidget(QWidget):
         clear_button_style = theme_manager.generate_button_style("secondary")
         clear_button_style = clear_button_style.replace("padding: 8px 16px;", "padding: 4px 12px; font-size: 12px;")
         self.clear_log_button.setStyleSheet(clear_button_style)
+        
+        # 既存のログを再描画してテーマ反映
+        self._reformat_existing_logs()
+    
+    def _reformat_existing_logs(self):
+        """既存のログをテーマに合わせて再フォーマット"""
+        if not hasattr(self, 'theme_manager') or not self.theme_manager:
+            return
+            
+        # 現在のログ内容を取得
+        current_text = self.log_text.toPlainText()
+        if not current_text.strip():
+            return
+            
+        # ログをクリアして、テーマ適用済みメッセージを追加
+        self.log_text.clear()
+        self.add_log(LogLevel.INFO, "テーマが適用されました")
