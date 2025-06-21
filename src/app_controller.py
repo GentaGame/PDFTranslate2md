@@ -22,9 +22,9 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 既存モジュールのインポート
-from src.pdf_extractor import extract_text, extract_images
-from src.markdown_writer import write_markdown
-from src.translator_service import TranslatorService
+from .pdf_extractor import extract_text, extract_images
+from .markdown_writer import write_markdown
+from .translator_service import TranslatorService
 from src.unicode_handler import normalize_unicode_text, validate_text_for_api
 
 

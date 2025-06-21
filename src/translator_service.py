@@ -18,10 +18,10 @@ from tqdm.auto import tqdm
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 新しいプロバイダーアーキテクチャをインポート
-from src.providers import (
-    create_provider, 
-    get_supported_providers, 
-    get_default_model, 
+from .providers import (
+    create_provider,
+    get_supported_providers,
+    get_default_model,
     validate_provider_name,
     BaseProvider,
     APIError,
@@ -31,8 +31,8 @@ from src.providers import (
 )
 
 # 既存のモジュールをインポート
-from src.retry_manager import RetryManager, RETRY_EXCEPTIONS
-from src.rate_limiter import RateLimiter, global_rate_limiter
+from .retry_manager import RetryManager, RETRY_EXCEPTIONS
+from .rate_limiter import RateLimiter, global_rate_limiter
 from src.unicode_handler import normalize_unicode_text, validate_text_for_api
 
 
@@ -260,21 +260,71 @@ Markdownとして体裁を整えてください。特にヘッダーは以下の
         retry_count = self.retry_manager.get_retry_count(self._call_provider_with_retry)
         
         try:
-            # プロバイダーを使用してAPI呼び出し
-            response = self.provider.translate("", prompt)
-            return response
+            # タイムアウト付きでプロバイダーを使用してAPI呼び出し
+            import threading
+            import queue
+            
+            # 結果を格納するキュー
+            result_queue = queue.Queue()
+            exception_queue = queue.Queue()
+            
+            def api_call_worker():
+                """API呼び出しを実行するワーカー関数"""
+                try:
+                    response = self.provider.translate("", prompt)
+                    result_queue.put(response)
+                except Exception as e:
+                    exception_queue.put(e)
+            
+            # ワーカースレッドでAPI呼び出しを実行
+            worker_thread = threading.Thread(target=api_call_worker, daemon=True)
+            worker_thread.start()
+
+            # タイムアウト時間を設定（最大500秒）
+            timeout_seconds = 500
+            start_time = time.time()
+            
+            # 結果を待機（定期的にUIイベントを処理）
+            while worker_thread.is_alive():
+                elapsed = time.time() - start_time
+                
+                if elapsed > timeout_seconds:
+                    tqdm.write(f"  ⚠️ [GUI-DEBUG] API呼び出しタイムアウト ({timeout_seconds}秒)")
+                    raise APIError(f"API呼び出しがタイムアウトしました ({timeout_seconds}秒)")
+                
+                # 短時間待機してUIイベントを処理
+                worker_thread.join(timeout=0.1)
+                
+                # tqdmでの進捗表示
+                # if int(elapsed) % 5 == 0 and elapsed > 0:  # 5秒ごと
+                #     tqdm.write(f"  ⏳ [GUI-DEBUG] API応答待機中... ({elapsed:.0f}/{timeout_seconds}秒)")
+            
+            # 例外が発生した場合
+            if not exception_queue.empty():
+                raise exception_queue.get()
+            
+            # 結果を取得
+            if not result_queue.empty():
+                response = result_queue.get()
+                return response
+            else:
+                raise APIError("API呼び出しが予期せず終了しました")
             
         except RateLimitError as e:
             # レート制限エラーの処理
             self.retry_manager.handle_resource_exhausted_error(
                 e, self.provider_name, retry_count, self.rate_limiter
             )
+            # エラーハンドリング後、適切にエラーを再発生させる
+            raise APIError(f"レート制限エラーにより翻訳に失敗しました: {e}")
             
         except HTTPStatusError as e:
             # HTTPステータスエラーの処理
             self.retry_manager.handle_http_error(
                 e, self.provider_name, retry_count, self.rate_limiter
             )
+            # エラーハンドリング後、適切にエラーを再発生させる
+            raise APIError(f"HTTPエラーにより翻訳に失敗しました: {e}")
             
         except UnicodeEncodeError as e:
             # UnicodeEncodeError処理
@@ -291,14 +341,20 @@ Markdownとして体裁を整えてください。特にヘッダーは以下の
                 self.retry_manager.handle_resource_exhausted_error(
                     e, self.provider_name, retry_count, self.rate_limiter
                 )
+                # エラーハンドリング後、適切にエラーを再発生させる
+                raise APIError(f"リソース枯渇エラーにより翻訳に失敗しました: {e}")
             
             # DeadlineExceededエラーを特別に処理
             elif "DeadlineExceeded" in error_type or "Deadline Exceeded" in str(e) or "504" in str(e):
                 self.retry_manager.handle_deadline_exceeded_error(e, retry_count)
+                # エラーハンドリング後、適切にエラーを再発生させる
+                raise APIError(f"タイムアウトエラーにより翻訳に失敗しました: {e}")
             
             # その他の一般的なエラー
             else:
                 self.retry_manager.handle_general_error(e, retry_count)
+                # エラーハンドリング後、適切にエラーを再発生させる
+                raise APIError(f"一般的なエラーにより翻訳に失敗しました: {e}")
     
     def translate_page(self, text: str, page_info: Optional[Dict[str, int]] = None, 
                       previous_headers: Optional[List[str]] = None, target_lang: str = "ja") -> Tuple[str, List[str]]:
@@ -368,8 +424,15 @@ Markdownとして体裁を整えてください。特にヘッダーは以下の
             # API呼び出しの実行
             start_time = time.time()
             
+            # GUI用デバッグログ: API呼び出し開始
+            tqdm.write(f"  🔄 [GUI-DEBUG] API呼び出し開始 - {time.strftime('%H:%M:%S')}")
+            
             # リトライ機能付き呼び出し
             result = self._call_provider_with_retry(prompt)
+            
+            # GUI用デバッグログ: API呼び出し完了
+            api_duration = time.time() - start_time
+            tqdm.write(f"  ✅ [GUI-DEBUG] API呼び出し完了 - {time.strftime('%H:%M:%S')} (所要時間: {api_duration:.2f}秒)")
             
             # ヘッダーの整形処理を適用
             result = self.clean_markdown_headers(result)

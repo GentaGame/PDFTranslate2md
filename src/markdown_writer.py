@@ -1,6 +1,6 @@
 import os
 import logging
-from unicode_handler import normalize_unicode_text, validate_text_for_api
+from src.unicode_handler import normalize_unicode_text, validate_text_for_api
 
 def write_markdown(md_path: str, pages: list, image_paths: list = None) -> None:
     """

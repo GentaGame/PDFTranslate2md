@@ -12,7 +12,7 @@ import http.client
 import urllib.error
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from tqdm.auto import tqdm
-from unicode_handler import normalize_unicode_text
+from src.unicode_handler import normalize_unicode_text
 
 
 # 例外をまとめたクラス定義（HTTPエラーを含む）

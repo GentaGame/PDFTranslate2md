@@ -10,7 +10,7 @@ import sys
 import os
 import argparse
 import logging
-from app_controller import AppController, validate_input_path, validate_provider_settings
+from .app_controller import AppController, validate_input_path, validate_provider_settings
 
 
 def setup_logging(unicode_debug: bool = False) -> None:
