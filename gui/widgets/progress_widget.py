@@ -331,14 +331,14 @@ class ProgressWidget(QWidget):
             color = "#6c757d"
             prefix = "🔍"
         
-        # HTMLでフォーマット（テーマ対応）
+        # HTMLでフォーマット（テーマ対応）- 最後に改行を追加
         import textwrap
         formatted_message = textwrap.dedent(f"""\
             <div style="margin: 2px 0; color: {text_color};">
                 <span style="color: {timestamp_color};">[{timestamp}]</span>
                 <span style="color: {color}; font-weight: bold;">{prefix} {level}:</span>
                 <span>{formatted_content}</span>
-            </div>
+            </div><br>
         """)
         
         # ログに追加
