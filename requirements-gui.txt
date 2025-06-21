@@ -3,6 +3,9 @@
 PyQt5
 PyQt5-sip
 
+# 通知機能用
+win10toast; sys_platform == "win32"
+
 # 既存の依存関係（requirements.txtと同じ）
 PyPDF2==3.0.1
 requests==2.28.2
