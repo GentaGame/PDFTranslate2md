@@ -26,55 +26,8 @@ from gui.gui_app_controller import GuiAppController, ProcessingSignals
 from gui.history_manager import ProcessingHistory
 from gui.widgets import FileDropWidget, ProgressWidget, HistoryWidget
 from gui.theme_manager import get_theme_manager
-
-
-class SettingsDialog(QDialog):
-    """設定ダイアログ"""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("設定")
-        self.setModal(True)
-        self.resize(400, 300)
-        
-        layout = QVBoxLayout()
-        
-        # API設定グループ
-        api_group = QGroupBox("API設定")
-        api_layout = QVBoxLayout()
-        
-        api_info = QLabel(
-            "API設定は環境変数（.env）ファイルで設定してください。\n"
-            "詳細はREADME.mdを参照してください。"
-        )
-        api_info.setWordWrap(True)
-        api_layout.addWidget(api_info)
-        
-        api_group.setLayout(api_layout)
-        layout.addWidget(api_group)
-        
-        # UI設定グループ
-        ui_group = QGroupBox("UI設定")
-        ui_layout = QVBoxLayout()
-        
-        self.auto_save_history = QCheckBox("履歴を自動保存する")
-        self.auto_save_history.setChecked(True)
-        ui_layout.addWidget(self.auto_save_history)
-        
-        self.confirm_overwrite = QCheckBox("既存ファイル上書き時に確認する")
-        self.confirm_overwrite.setChecked(True)
-        ui_layout.addWidget(self.confirm_overwrite)
-        
-        ui_group.setLayout(ui_layout)
-        layout.addWidget(ui_group)
-        
-        # ボタン
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        
-        self.setLayout(layout)
+from gui.notification_manager import NotificationManager
+from gui.settings_dialog import SettingsDialog
 
 
 class AboutDialog(QDialog):
@@ -141,6 +94,10 @@ class MainWindow(QMainWindow):
         # テーマ管理
         self.theme_manager = get_theme_manager()
         self.theme_manager.theme_changed.connect(self._on_theme_changed)
+        
+        # 通知管理
+        self.notification_manager = NotificationManager(self)
+        self._load_notification_settings()
         
         # UI初期化
         self._setup_ui()
@@ -597,6 +554,8 @@ class MainWindow(QMainWindow):
                     self.status_bar.showMessage("処理がキャンセルされました")
                     # 履歴ウィジェットの翻訳状態をリセット（タイマー再開）
                     self.history_widget.set_translation_state(False)
+                    # 処理キャンセル通知
+                    self.notification_manager.notify_processing_cancelled("処理がキャンセルされました")
                     self._reset_ui_state()
     
     @pyqtSlot(bool, str)
@@ -607,11 +566,14 @@ class MainWindow(QMainWindow):
         # 履歴ウィジェットの翻訳状態をリセット（タイマー再開）
         self.history_widget.set_translation_state(False)
         
+        # 通知を先に送信（ダイアログ表示と同時）
         if success:
             self.status_bar.showMessage("処理完了")
+            self.notification_manager.notify_processing_completed(True, "処理完了", "翻訳処理が正常に完了しました。")
             QMessageBox.information(self, "処理完了", "翻訳処理が正常に完了しました。")
         else:
             self.status_bar.showMessage("処理失敗")
+            self.notification_manager.notify_processing_completed(False, "処理失敗", f"処理中にエラーが発生しました:\n{message}")
             QMessageBox.warning(self, "処理失敗", f"処理中にエラーが発生しました:\n{message}")
         
         self._reset_ui_state()
@@ -691,7 +653,16 @@ class MainWindow(QMainWindow):
     def _show_settings(self):
         """設定ダイアログを表示"""
         dialog = SettingsDialog(self)
-        dialog.exec_()
+        
+        # 現在の設定を読み込み
+        notification_settings = self.notification_manager.get_notification_settings()
+        dialog.load_settings(notification_settings)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            # 通知設定を保存
+            notification_settings = dialog.get_notification_settings()
+            self.notification_manager.set_notification_settings(notification_settings)
+            self._save_notification_settings()
     
     def _show_about(self):
         """アバウトダイアログを表示"""
@@ -727,6 +698,11 @@ class MainWindow(QMainWindow):
         
         # 設定を保存
         self._save_settings()
+        self._save_notification_settings()
+        
+        # 通知マネージャーをクリーンアップ
+        if hasattr(self, 'notification_manager'):
+            self.notification_manager.cleanup()
         
         event.accept()
     
@@ -761,6 +737,17 @@ class MainWindow(QMainWindow):
     def _on_theme_changed(self, theme_name: str):
         """テーマが変更された時の処理"""
         self._apply_theme()
+    
+    def _load_notification_settings(self):
+        """通知設定を読み込み"""
+        settings = self.settings.value("notification_settings", {})
+        if settings:
+            self.notification_manager.set_notification_settings(settings)
+    
+    def _save_notification_settings(self):
+        """通知設定を保存"""
+        settings = self.notification_manager.get_notification_settings()
+        self.settings.setValue("notification_settings", settings)
 
 
 def main():
