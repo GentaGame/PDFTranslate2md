@@ -508,7 +508,7 @@ class GuiAppController(AppController):
     def get_available_models(self, provider: str) -> List[str]:
         """指定プロバイダーで利用可能なモデル一覧を取得"""
         models = {
-            'gemini': ['gemini-2.5-flash-preview-04-17'],
+            'gemini': ['gemini-2.5-flash-preview-04-17','gemini-2.5-flash-preview-05-20'],
             'openai': ['gpt-4.1', 'gpt-4.1-mini'],
             'anthropic': ['claude-3-7-sonnet']
         }
